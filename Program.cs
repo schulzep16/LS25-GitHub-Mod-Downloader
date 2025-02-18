@@ -423,39 +423,22 @@ class Program
                     Directory.CreateDirectory(tempExtractPath);
                     ZipFile.ExtractToDirectory(tempZipPath, tempExtractPath);
 
-                    // Ermittle den Pfad zur neuen EXE anhand des Namens der aktuellen EXE
-                    string currentExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
-                    string exeName = Path.GetFileName(currentExecutablePath);
-                    string newExePath = Path.Combine(tempExtractPath, exeName);
-                    if (!File.Exists(newExePath))
-                    {
-                        // Suche in Unterverzeichnissen
-                        var exeFiles = Directory.GetFiles(tempExtractPath, exeName, SearchOption.AllDirectories);
-                        if (exeFiles.Length > 0)
-                        {
-                            newExePath = exeFiles[0];
-                        }
-                        else
-                        {
-                            Console.WriteLine("Die aktualisierte EXE-Datei wurde nicht gefunden.");
-                            return;
-                        }
-                    }
-
                     // Erstelle eine temporäre Batch-Datei, die das Update installiert:
                     // 1. Kurze Wartezeit, damit die Anwendung vollständig beendet ist
-                    // 2. Kopiert die neue EXE über die alte
+                    // 2. Kopiert alle Dateien aus dem temporären Ordner in das aktuelle Verzeichnis
                     // 3. Startet die aktualisierte Anwendung
                     // 4. Löscht sich selbst
+                    string currentExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
+                    string currentDirectory = Path.GetDirectoryName(currentExecutablePath);
                     string batchFilePath = Path.Combine(Path.GetTempPath(), "update.bat");
                     string batchContent = $@"@echo off
-    echo Warte auf Beendigung der Anwendung...
-    ping 127.0.0.1 -n 5 >nul
-    echo Update wird installiert...
-    copy /Y ""{newExePath}"" ""{currentExecutablePath}""
-    echo Update installiert.
-    start """" ""{currentExecutablePath}""
-    del ""%~f0""";
+echo Warte auf Beendigung der Anwendung...
+ping 127.0.0.1 -n 5 >nul
+echo Update wird installiert...
+xcopy /Y /E ""{tempExtractPath}\*"" ""{currentDirectory}\""
+echo Update installiert.
+start """" ""{currentExecutablePath}""
+del ""%~f0""";
 
                     File.WriteAllText(batchFilePath, batchContent);
 
@@ -468,9 +451,25 @@ class Program
                     });
                     Console.WriteLine("Update wird durchgeführt. Die Anwendung wird jetzt beendet.");
 
-                    // Aktualisiere die Versionsnummer in der current_version.txt
-                    versions["ProgramVersion"] = latestVersion;
-                    await SaveCurrentVersionsAsync(versions);
+                    // Überprüfe, ob alle Dateien erfolgreich aktualisiert wurden
+                    bool updateSuccessful = Directory.GetFiles(tempExtractPath, "*", SearchOption.AllDirectories)
+                        .All(tempFile =>
+                        {
+                            string relativePath = Path.GetRelativePath(tempExtractPath, tempFile);
+                            string targetFile = Path.Combine(currentDirectory, relativePath);
+                            return File.Exists(targetFile) && File.ReadAllBytes(tempFile).SequenceEqual(File.ReadAllBytes(targetFile));
+                        });
+
+                    if (updateSuccessful)
+                    {
+                        // Aktualisiere die Versionsnummer in der current_version.txt
+                        versions["ProgramVersion"] = latestVersion;
+                        await SaveCurrentVersionsAsync(versions);
+                    }
+                    else
+                    {
+                        Console.WriteLine("Fehler: Nicht alle Dateien wurden erfolgreich aktualisiert.");
+                    }
 
                     Environment.Exit(0);
                 }
@@ -495,4 +494,5 @@ class Program
             Console.ResetColor();
         }
     }
+
 }
