@@ -1,6 +1,8 @@
 ﻿using Newtonsoft.Json;
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
 using System.Xml.Linq;
 
 public class GitHubProject
@@ -356,8 +358,9 @@ class Program
     /// <summary>
     /// Prüft beim Programmstart, ob ein Software-Update verfügbar ist.  
     /// Falls ja, wird der Nutzer informiert und muss das Update per Eingabe bestätigen.
-    /// Wird bestätigt, lädt die Methode das Update herunter, entpackt es und erstellt eine temporäre Batch-Datei,
-    /// die nach Beendigung der Anwendung die neue EXE über die alte kopiert und die aktualisierte Version startet.
+    /// Wird bestätigt, lädt die Methode das Update herunter, entpackt es (ohne den "Output"-Ordner) und 
+    /// erstellt eine temporäre Batch-Datei, die nach Beendigung der Anwendung die neue EXE über die alte kopiert 
+    /// und die aktualisierte Version startet.
     /// </summary>
     static async Task CheckForSoftwareUpdateAsync()
     {
@@ -414,20 +417,44 @@ class Program
                         }
                     }
 
-                    // Entpacke das Update in einen temporären Ordner
+                    // Entpacke das Update in einen temporären Ordner, überspringe dabei den "Output"-Ordner
                     string tempExtractPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update");
                     if (Directory.Exists(tempExtractPath))
                     {
                         Directory.Delete(tempExtractPath, true);
                     }
                     Directory.CreateDirectory(tempExtractPath);
-                    ZipFile.ExtractToDirectory(tempZipPath, tempExtractPath);
 
-                    // Erstelle eine temporäre Batch-Datei, die das Update installiert:
-                    // 1. Kurze Wartezeit, damit die Anwendung vollständig beendet ist
-                    // 2. Kopiert alle Dateien aus dem temporären Ordner in das aktuelle Verzeichnis
-                    // 3. Startet die aktualisierte Anwendung
-                    // 4. Löscht sich selbst
+                    using (ZipArchive archive = ZipFile.OpenRead(tempZipPath))
+                    {
+                        foreach (ZipArchiveEntry entry in archive.Entries)
+                        {
+                            // Überspringe alle Einträge, die im "Output"-Ordner liegen
+                            if (entry.FullName.StartsWith("Output/", StringComparison.OrdinalIgnoreCase) ||
+                                entry.FullName.StartsWith("Output\\", StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+
+                            // Bestimme den kompletten Zielpfad
+                            string destinationPath = Path.Combine(tempExtractPath, entry.FullName);
+
+                            // Falls es sich um einen Ordner handelt, diesen erstellen
+                            if (string.IsNullOrEmpty(entry.Name))
+                            {
+                                Directory.CreateDirectory(destinationPath);
+                            }
+                            else
+                            {
+                                // Stelle sicher, dass das Verzeichnis existiert, und extrahiere dann die Datei
+                                Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
+                                entry.ExtractToFile(destinationPath, overwrite: true);
+                            }
+                        }
+                    }
+
+                    // Verwende nun den tempExtractPath als Quelle für die Aktualisierung
+                    string sourceFolder = tempExtractPath;
                     string currentExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
                     string currentDirectory = Path.GetDirectoryName(currentExecutablePath);
                     string batchFilePath = Path.Combine(Path.GetTempPath(), "update.bat");
@@ -435,7 +462,7 @@ class Program
 echo Warte auf Beendigung der Anwendung...
 ping 127.0.0.1 -n 5 >nul
 echo Update wird installiert...
-xcopy /Y /E ""{tempExtractPath}\*"" ""{currentDirectory}\""
+xcopy /Y /E ""{sourceFolder}\*"" ""{currentDirectory}\""
 echo Update installiert.
 start """" ""{currentExecutablePath}""
 del ""%~f0""";
@@ -452,12 +479,12 @@ del ""%~f0""";
                     Console.WriteLine("Update wird durchgeführt. Die Anwendung wird jetzt beendet.");
 
                     // Überprüfe, ob alle Dateien erfolgreich aktualisiert wurden
-                    bool updateSuccessful = Directory.GetFiles(tempExtractPath, "*", SearchOption.AllDirectories)
+                    bool updateSuccessful = Directory.GetFiles(sourceFolder, "*", SearchOption.AllDirectories)
                         .All(tempFile =>
                         {
-                            string relativePath = Path.GetRelativePath(tempExtractPath, tempFile);
+                            string relativePath = Path.GetRelativePath(sourceFolder, tempFile);
                             string targetFile = Path.Combine(currentDirectory, relativePath);
-                            return File.Exists(targetFile) && File.ReadAllBytes(tempFile).SequenceEqual(File.ReadAllBytes(targetFile));
+                            return File.Exists(targetFile) && CompareFiles(tempFile, targetFile);
                         });
 
                     if (updateSuccessful)
@@ -495,4 +522,39 @@ del ""%~f0""";
         }
     }
 
+    /// <summary>
+    /// Vergleicht zwei Dateien, indem zunächst die Dateigrößen und anschließend die Datei-Inhalte in Blöcken verglichen werden.
+    /// </summary>
+    /// <param name="file1">Pfad zur ersten Datei</param>
+    /// <param name="file2">Pfad zur zweiten Datei</param>
+    /// <returns>true, wenn die Dateien identisch sind, sonst false</returns>
+    private static bool CompareFiles(string file1, string file2)
+    {
+        FileInfo fi1 = new FileInfo(file1);
+        FileInfo fi2 = new FileInfo(file2);
+        if (fi1.Length != fi2.Length)
+            return false;
+
+        const int bufferSize = 8192;
+        using (FileStream fs1 = File.OpenRead(file1))
+        using (FileStream fs2 = File.OpenRead(file2))
+        {
+            byte[] buffer1 = new byte[bufferSize];
+            byte[] buffer2 = new byte[bufferSize];
+            int bytesRead1;
+            int bytesRead2;
+            while ((bytesRead1 = fs1.Read(buffer1, 0, bufferSize)) > 0)
+            {
+                bytesRead2 = fs2.Read(buffer2, 0, bufferSize);
+                if (bytesRead1 != bytesRead2)
+                    return false;
+                for (int i = 0; i < bytesRead1; i++)
+                {
+                    if (buffer1[i] != buffer2[i])
+                        return false;
+                }
+            }
+        }
+        return true;
+    }
 }
