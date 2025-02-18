@@ -1,8 +1,12 @@
 ﻿using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.IO.Compression;
-using System.Security.Cryptography;
-using System.Text;
+using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
 using System.Xml.Linq;
 
 public class GitHubProject
@@ -47,20 +51,22 @@ class Program
         // Update prüfen – falls verfügbar, wird der Nutzer informiert und muss per Eingabe bestätigen
         await CheckForSoftwareUpdateAsync();
 
-        // Projekte aus der JSON-Datei laden (oder Default-Werte setzen)
+        // Projekte aus der JSON-Datei laden (oder Standardwerte setzen)
         await LoadProjectsAsync();
 
         // Integrierte Mods anzeigen
         DisplayIntegratedMods();
 
-        // Dem Nutzer die Möglichkeit geben, Projekte zu verwalten
+        // Dem Nutzer die Möglichkeit geben, Projekte zu verwalten (Hinzufügen/Löschen)
         await ManageProjectsAsync();
 
         Console.WriteLine("Starte Überprüfung der Mods...");
         await InitializeCurrentVersionsAsync();
         versions = await GetCurrentVersionsAsync();
 
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("request");
+        // Sicherstellen, dass der User-Agent gesetzt ist
+        if (!client.DefaultRequestHeaders.Contains("User-Agent"))
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("request");
 
         foreach (var project in Projects)
         {
@@ -142,10 +148,33 @@ class Program
                 var username = Console.ReadLine();
                 Console.Write("Repository Name: ");
                 var repo = Console.ReadLine();
+
+                // Sicherstellen, dass der User-Agent gesetzt ist
+                if (!client.DefaultRequestHeaders.Contains("User-Agent"))
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd("request");
+
+                // Prüfe, ob das Projekt existiert (über den Latest Release-Endpunkt)
+                string checkUrl = $"https://api.github.com/repos/{username}/{repo}/releases/latest";
+                try
+                {
+                    var response = await client.GetAsync(checkUrl);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine("Projekt nicht gefunden oder es existieren keine Releases.");
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Fehler beim Prüfen des Projekts: " + ex.Message);
+                    break;
+                }
+
                 Projects.Add(new GitHubProject { Username = username, Repo = repo });
                 await SaveProjectsAsync();
                 Console.WriteLine("Projekt hinzugefügt.");
                 break;
+
             case "2":
                 if (Projects.Count == 0)
                 {
@@ -160,9 +189,36 @@ class Program
                 Console.Write("Nummer des zu löschenden Projekts: ");
                 if (int.TryParse(Console.ReadLine(), out int index) && index > 0 && index <= Projects.Count)
                 {
+                    // Projekt aus der Liste entfernen
+                    GitHubProject removedProject = Projects[index - 1];
                     Projects.RemoveAt(index - 1);
                     await SaveProjectsAsync();
                     Console.WriteLine("Projekt gelöscht.");
+
+                    // Entferne den Eintrag aus der current_version.txt
+                    var versions = await GetCurrentVersionsAsync();
+                    if (versions.Remove(removedProject.Repo))
+                    {
+                        await SaveCurrentVersionsAsync(versions);
+                        Console.WriteLine("Zugehöriger Eintrag in current_version.txt entfernt.");
+                    }
+
+                    // Frage, ob auch der Mod aus dem Mod-Ordner gelöscht werden soll
+                    Console.Write("Soll auch der Mod aus dem Mod-Ordner gelöscht werden? (J/N): ");
+                    string? modDeleteChoice = Console.ReadLine();
+                    if (modDeleteChoice != null && modDeleteChoice.Trim().ToUpper().StartsWith("J"))
+                    {
+                        string modZipPath = Path.Combine(ModFolder, $"{removedProject.Repo}.zip");
+                        if (File.Exists(modZipPath))
+                        {
+                            File.Delete(modZipPath);
+                            Console.WriteLine("Mod-Datei wurde gelöscht.");
+                        }
+                        else
+                        {
+                            Console.WriteLine("Keine Mod-Datei im Mod-Ordner gefunden.");
+                        }
+                    }
                 }
                 else
                 {
@@ -525,9 +581,6 @@ del ""%~f0""";
     /// <summary>
     /// Vergleicht zwei Dateien, indem zunächst die Dateigrößen und anschließend die Datei-Inhalte in Blöcken verglichen werden.
     /// </summary>
-    /// <param name="file1">Pfad zur ersten Datei</param>
-    /// <param name="file2">Pfad zur zweiten Datei</param>
-    /// <returns>true, wenn die Dateien identisch sind, sonst false</returns>
     private static bool CompareFiles(string file1, string file2)
     {
         FileInfo fi1 = new FileInfo(file1);
