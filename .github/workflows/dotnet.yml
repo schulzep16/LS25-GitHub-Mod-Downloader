@@ -28,7 +28,7 @@ jobs:
       run: dotnet test --no-build --verbosity normal
     
     - name: Publish
-      run: dotnet publish -c Release -o output
+      run: dotnet publish -c Release -o output -r win-x64
 
     - name: Create ZIP Archive
       run: zip -r release.zip output/
