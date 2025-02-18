@@ -1,12 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Newtonsoft.Json;
 using System.Diagnostics;
-using System.IO;
 using System.IO.Compression;
-using System.Net.Http;
-using System.Threading.Tasks;
 using System.Xml.Linq;
-using Newtonsoft.Json;
 
 public class GitHubProject
 {
@@ -17,7 +12,7 @@ public class GitHubProject
 class Program
 {
     // Aktuelle Version der Software
-    private const string CurrentVersion = "1.0.0";
+    private const string DefaultVersion = "1.0.0";
 
     private static readonly string ModFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
@@ -32,40 +27,59 @@ class Program
 
     static async Task Main(string[] args)
     {
-        // Versionsnummer anzeigen
-        Console.WriteLine($"Programm Version: {CurrentVersion}");
-        Console.WriteLine();
-
-        // Update prüfen – falls verfügbar, wird der Nutzer informiert und muss per Eingabe bestätigen
-        await CheckForSoftwareUpdateAsync();
-
         // Sicherstellen, dass der Mod-Ordner existiert
         if (!Directory.Exists(ModFolder))
         {
             Directory.CreateDirectory(ModFolder);
         }
 
+        // Versionsnummer des Programms in current_version.txt prüfen und ggf. hinzufügen
+        await EnsureProgramVersionInFileAsync();
+
+        // Aktuelle Version aus der Datei lesen und anzeigen
+        var versions = await GetCurrentVersionsAsync();
+        string currentVersion = versions.ContainsKey("ProgramVersion") ? versions["ProgramVersion"] : DefaultVersion;
+        Console.WriteLine($"Programm Version: {currentVersion}");
+        Console.WriteLine();
+
+        // Update prüfen – falls verfügbar, wird der Nutzer informiert und muss per Eingabe bestätigen
+        await CheckForSoftwareUpdateAsync();
+
         // Projekte aus der JSON-Datei laden (oder Default-Werte setzen)
         await LoadProjectsAsync();
+
+        // Integrierte Mods anzeigen
+        DisplayIntegratedMods();
 
         // Dem Nutzer die Möglichkeit geben, Projekte zu verwalten
         await ManageProjectsAsync();
 
         Console.WriteLine("Starte Überprüfung der Mods...");
         await InitializeCurrentVersionsAsync();
-        var currentVersions = await GetCurrentVersionsAsync();
+        versions = await GetCurrentVersionsAsync();
 
         client.DefaultRequestHeaders.UserAgent.ParseAdd("request");
 
         foreach (var project in Projects)
         {
-            await CheckAndUpdateModAsync(project, currentVersions);
+            await CheckAndUpdateModAsync(project, versions);
         }
 
-        await SaveCurrentVersionsAsync(currentVersions);
+        await SaveCurrentVersionsAsync(versions);
         Console.WriteLine("Überprüfung abgeschlossen.");
         Console.WriteLine("Drücke Enter, um das Programm zu beenden.");
         Console.ReadLine();
+    }
+
+    static async Task EnsureProgramVersionInFileAsync()
+    {
+        var versions = await GetCurrentVersionsAsync();
+        if (!versions.ContainsKey("ProgramVersion"))
+        {
+            // Keine Version gefunden, Update auslösen
+            await CheckForSoftwareUpdateAsync();
+            versions = await GetCurrentVersionsAsync();
+        }
     }
 
     static async Task LoadProjectsAsync()
@@ -92,6 +106,23 @@ class Program
     {
         var json = JsonConvert.SerializeObject(Projects, Formatting.Indented);
         await File.WriteAllTextAsync(ProjectsFile, json);
+    }
+
+    static void DisplayIntegratedMods()
+    {
+        Console.WriteLine("Aktuell berücksichtigte Mods:");
+        if (Projects.Count == 0)
+        {
+            Console.WriteLine("Keine Mods integriert.");
+        }
+        else
+        {
+            foreach (var project in Projects)
+            {
+                Console.WriteLine($"- {project.Username}/{project.Repo}");
+            }
+        }
+        Console.WriteLine();
     }
 
     static async Task ManageProjectsAsync()
@@ -224,13 +255,22 @@ class Program
         var versions = new Dictionary<string, string>();
         if (File.Exists(CurrentVersionFile))
         {
-            foreach (var line in await File.ReadAllLinesAsync(CurrentVersionFile))
+            try
             {
-                var parts = line.Split(':');
-                if (parts.Length == 2)
+                foreach (var line in await File.ReadAllLinesAsync(CurrentVersionFile))
                 {
-                    versions[parts[0]] = parts[1];
+                    var parts = line.Split(':');
+                    if (parts.Length == 2)
+                    {
+                        versions[parts[0]] = parts[1];
+                    }
                 }
+            }
+            catch (Exception e)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Fehler beim Lesen der {CurrentVersionFile}: {e.Message}");
+                Console.ResetColor();
             }
         }
         return versions;
@@ -238,12 +278,21 @@ class Program
 
     static async Task SaveCurrentVersionsAsync(Dictionary<string, string> versions)
     {
-        using (var sw = new StreamWriter(CurrentVersionFile))
+        try
         {
-            foreach (var kvp in versions)
+            using (var sw = new StreamWriter(CurrentVersionFile))
             {
-                await sw.WriteLineAsync($"{kvp.Key}:{kvp.Value}");
+                foreach (var kvp in versions)
+                {
+                    await sw.WriteLineAsync($"{kvp.Key}:{kvp.Value}");
+                }
             }
+        }
+        catch (Exception e)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Fehler beim Speichern der {CurrentVersionFile}: {e.Message}");
+            Console.ResetColor();
         }
     }
 
@@ -272,12 +321,26 @@ class Program
         var versions = await GetCurrentVersionsAsync();
         bool updated = false;
 
+        // Entferne nicht mehr benötigte Einträge
+        var keysToRemove = new List<string>();
+        foreach (var key in versions.Keys)
+        {
+            if (key != "ProgramVersion" && !Projects.Exists(p => p.Repo == key))
+            {
+                keysToRemove.Add(key);
+            }
+        }
+        foreach (var key in keysToRemove)
+        {
+            versions.Remove(key);
+            updated = true;
+        }
+
+        // Füge fehlende Einträge hinzu
         foreach (var project in Projects)
         {
             string repoName = project.Repo;
-            string modZipPath = Path.Combine(ModFolder, $"{repoName}.zip");
-
-            if (!versions.ContainsKey(repoName) || versions[repoName] == "Not Installed" || !File.Exists(modZipPath))
+            if (!versions.ContainsKey(repoName))
             {
                 versions[repoName] = "Not Installed";
                 updated = true;
@@ -314,11 +377,14 @@ class Program
             dynamic jsonResponse = JsonConvert.DeserializeObject(await response.Content.ReadAsStringAsync());
             string latestVersion = jsonResponse?.tag_name?.ToString()?.TrimStart('v') ?? "unknown";
 
-            if (CurrentVersion != latestVersion)
+            var versions = await GetCurrentVersionsAsync();
+            string currentVersion = versions.ContainsKey("ProgramVersion") ? versions["ProgramVersion"] : null;
+
+            if (currentVersion != latestVersion)
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"Es ist ein Update verfügbar!");
-                Console.WriteLine($"Aktuelle Version: {CurrentVersion}");
+                Console.WriteLine($"Aktuelle Version: {currentVersion ?? "Nicht installiert"}");
                 Console.WriteLine($"Neue Version: {latestVersion}");
                 Console.WriteLine("Drücke Enter, um das Update durchzuführen oder eine beliebige andere Taste, um es zu überspringen...");
                 Console.ResetColor();
@@ -383,13 +449,13 @@ class Program
                     // 4. Löscht sich selbst
                     string batchFilePath = Path.Combine(Path.GetTempPath(), "update.bat");
                     string batchContent = $@"@echo off
-echo Warte auf Beendigung der Anwendung...
-ping 127.0.0.1 -n 5 >nul
-echo Update wird installiert...
-copy /Y ""{newExePath}"" ""{currentExecutablePath}""
-echo Update installiert.
-start """" ""{currentExecutablePath}""
-del ""%~f0""";
+    echo Warte auf Beendigung der Anwendung...
+    ping 127.0.0.1 -n 5 >nul
+    echo Update wird installiert...
+    copy /Y ""{newExePath}"" ""{currentExecutablePath}""
+    echo Update installiert.
+    start """" ""{currentExecutablePath}""
+    del ""%~f0""";
 
                     File.WriteAllText(batchFilePath, batchContent);
 
@@ -401,6 +467,11 @@ del ""%~f0""";
                         CreateNoWindow = true
                     });
                     Console.WriteLine("Update wird durchgeführt. Die Anwendung wird jetzt beendet.");
+
+                    // Aktualisiere die Versionsnummer in der current_version.txt
+                    versions["ProgramVersion"] = latestVersion;
+                    await SaveCurrentVersionsAsync(versions);
+
                     Environment.Exit(0);
                 }
                 else
