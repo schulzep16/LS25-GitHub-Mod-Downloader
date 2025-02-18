@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
@@ -15,6 +16,9 @@ public class GitHubProject
 
 class Program
 {
+    // Aktuelle Version der Software
+    private const string CurrentVersion = "1.0.0";
+
     private static readonly string ModFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
         "My Games", "FarmingSimulator2025", "mods");
@@ -28,6 +32,13 @@ class Program
 
     static async Task Main(string[] args)
     {
+        // Versionsnummer anzeigen
+        Console.WriteLine($"Programm Version: {CurrentVersion}");
+        Console.WriteLine();
+
+        // Update prüfen – falls verfügbar, wird der Nutzer informiert und muss per Eingabe bestätigen
+        await CheckForSoftwareUpdateAsync();
+
         // Sicherstellen, dass der Mod-Ordner existiert
         if (!Directory.Exists(ModFolder))
         {
@@ -158,7 +169,7 @@ class Program
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Neue Version gefunden für {repoName}: {latestVersion} (Aktuelle Version: {currentVersion})");
 
-                var downloadUrl = jsonResponse.assets[0].browser_download_url?.ToString();
+                string downloadUrl = jsonResponse.assets[0].browser_download_url?.ToString();
                 var downloadResponse = await client.GetAsync(downloadUrl);
 
                 if (downloadResponse.IsSuccessStatusCode)
@@ -276,6 +287,141 @@ class Program
         if (updated)
         {
             await SaveCurrentVersionsAsync(versions);
+        }
+    }
+
+    /// <summary>
+    /// Prüft beim Programmstart, ob ein Software-Update verfügbar ist.  
+    /// Falls ja, wird der Nutzer informiert und muss das Update per Eingabe bestätigen.
+    /// Wird bestätigt, lädt die Methode das Update herunter, entpackt es und erstellt eine temporäre Batch-Datei,
+    /// die nach Beendigung der Anwendung die neue EXE über die alte kopiert und die aktualisierte Version startet.
+    /// </summary>
+    static async Task CheckForSoftwareUpdateAsync()
+    {
+        // GitHub-Repository-Informationen (anpassen, falls nötig)
+        string username = "schulzep16";
+        string repoName = "LS25-GitHub-Mod-Downloader";
+
+        try
+        {
+            var latestReleaseUrl = $"https://api.github.com/repos/{username}/{repoName}/releases/latest";
+            var request = new HttpRequestMessage(HttpMethod.Get, latestReleaseUrl);
+            request.Headers.UserAgent.ParseAdd("request");
+
+            var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            dynamic jsonResponse = JsonConvert.DeserializeObject(await response.Content.ReadAsStringAsync());
+            string latestVersion = jsonResponse?.tag_name?.ToString()?.TrimStart('v') ?? "unknown";
+
+            if (CurrentVersion != latestVersion)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Es ist ein Update verfügbar!");
+                Console.WriteLine($"Aktuelle Version: {CurrentVersion}");
+                Console.WriteLine($"Neue Version: {latestVersion}");
+                Console.WriteLine("Drücke Enter, um das Update durchzuführen oder eine beliebige andere Taste, um es zu überspringen...");
+                Console.ResetColor();
+
+                var key = Console.ReadKey(true);
+                // Nur wenn Enter gedrückt wird, wird das Update durchgeführt
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    Console.WriteLine("Update wird durchgeführt...");
+
+                    // Download-URL des neuen Releases (hier wird der erste Asset angenommen)
+                    string downloadUrl = jsonResponse.assets[0].browser_download_url?.ToString();
+                    if (string.IsNullOrWhiteSpace(downloadUrl))
+                    {
+                        Console.WriteLine("Download-URL nicht gefunden.");
+                        return;
+                    }
+
+                    // Download des Update-Zips in einen temporären Ordner
+                    string tempZipPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update.zip");
+                    using (var updateResponse = await client.GetAsync(downloadUrl))
+                    {
+                        updateResponse.EnsureSuccessStatusCode();
+                        using (var fs = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write))
+                        {
+                            await updateResponse.Content.CopyToAsync(fs);
+                        }
+                    }
+
+                    // Entpacke das Update in einen temporären Ordner
+                    string tempExtractPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update");
+                    if (Directory.Exists(tempExtractPath))
+                    {
+                        Directory.Delete(tempExtractPath, true);
+                    }
+                    Directory.CreateDirectory(tempExtractPath);
+                    ZipFile.ExtractToDirectory(tempZipPath, tempExtractPath);
+
+                    // Ermittle den Pfad zur neuen EXE anhand des Namens der aktuellen EXE
+                    string currentExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
+                    string exeName = Path.GetFileName(currentExecutablePath);
+                    string newExePath = Path.Combine(tempExtractPath, exeName);
+                    if (!File.Exists(newExePath))
+                    {
+                        // Suche in Unterverzeichnissen
+                        var exeFiles = Directory.GetFiles(tempExtractPath, exeName, SearchOption.AllDirectories);
+                        if (exeFiles.Length > 0)
+                        {
+                            newExePath = exeFiles[0];
+                        }
+                        else
+                        {
+                            Console.WriteLine("Die aktualisierte EXE-Datei wurde nicht gefunden.");
+                            return;
+                        }
+                    }
+
+                    // Erstelle eine temporäre Batch-Datei, die das Update installiert:
+                    // 1. Kurze Wartezeit, damit die Anwendung vollständig beendet ist
+                    // 2. Kopiert die neue EXE über die alte
+                    // 3. Startet die aktualisierte Anwendung
+                    // 4. Löscht sich selbst
+                    string batchFilePath = Path.Combine(Path.GetTempPath(), "update.bat");
+                    string batchContent = $@"@echo off
+echo Warte auf Beendigung der Anwendung...
+ping 127.0.0.1 -n 5 >nul
+echo Update wird installiert...
+copy /Y ""{newExePath}"" ""{currentExecutablePath}""
+echo Update installiert.
+start """" ""{currentExecutablePath}""
+del ""%~f0""";
+
+                    File.WriteAllText(batchFilePath, batchContent);
+
+                    // Starte die Batch-Datei und beende die Anwendung
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = batchFilePath,
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        CreateNoWindow = true
+                    });
+                    Console.WriteLine("Update wird durchgeführt. Die Anwendung wird jetzt beendet.");
+                    Environment.Exit(0);
+                }
+                else
+                {
+                    Console.WriteLine("Update übersprungen. Starte Anwendung wie gewohnt...");
+                }
+            }
+        }
+        catch (HttpRequestException e)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Netzwerkfehler beim Überprüfen der Software-Version: {e.Message}");
+        }
+        catch (Exception e)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Fehler beim Überprüfen der Software-Version: {e.Message}");
+        }
+        finally
+        {
+            Console.ResetColor();
         }
     }
 }
