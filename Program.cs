@@ -11,14 +11,14 @@ using System.Xml.Linq;
 
 public class GitHubProject
 {
-    public string Username { get; set; }
+    public string Username { get; set; } 
     public string Repo { get; set; }
 }
 
 class Program
 {
     // Aktuelle Version der Software
-    private const string DefaultVersion = "1.0.0";
+    private const string DefaultVersion = "1.0.0"; // Standard-Version, falls keine Version in current_version.txt gefunden wird
 
     private static readonly string ModFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
