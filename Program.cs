@@ -723,7 +723,7 @@ del ""%~f0""";
                 }
             }
         }
-        return foundProjects;
+        return foundProjects;  
     }
 
 }
