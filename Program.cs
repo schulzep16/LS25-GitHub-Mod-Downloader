@@ -75,6 +75,16 @@ class Program
 
         await SaveCurrentVersionsAsync(versions);
         Console.WriteLine("Überprüfung abgeschlossen.");
+        Console.WriteLine();
+
+        // Nach erfolgreichem Update den Nutzer fragen, ob der Farming Simulator 2025 gestartet werden soll.
+        Console.Write("Möchten Sie den Farming Simulator 2025 starten? (J/N): ");
+        var startGameInput = Console.ReadLine();
+        if (!string.IsNullOrEmpty(startGameInput) && startGameInput.Trim().ToUpper().StartsWith("J"))
+        {
+            StartFarmingSimulator();
+        }
+
         Console.WriteLine("Drücke Enter, um das Programm zu beenden.");
         Console.ReadLine();
     }
@@ -577,6 +587,66 @@ del ""%~f0""";
             Console.ResetColor();
         }
     }
+
+    /// <summary>
+    /// Startet den Farming Simulator 2025.
+    /// </summary>
+    static void StartFarmingSimulator()
+    {
+        string exeDirectory = AppDomain.CurrentDomain.BaseDirectory;
+        string configPath = Path.Combine(exeDirectory, "farming_simulator_path.txt");
+        string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        string[] shortcutFiles = Directory.GetFiles(desktopPath, "*.lnk");
+
+        string farmingSimulatorShortcut = shortcutFiles.FirstOrDefault(f => Path.GetFileName(f).Contains("Farming Simulator"));
+
+        if (farmingSimulatorShortcut != null)
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = farmingSimulatorShortcut,
+                UseShellExecute = true
+            });
+            Console.WriteLine("Farming Simulator wird gestartet...");
+            Environment.Exit(0);
+        }
+        else if (File.Exists(configPath))
+        {
+            string savedPath = File.ReadAllText(configPath).Trim('"');
+            if (File.Exists(savedPath))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = savedPath,
+                    UseShellExecute = true
+                });
+                Console.WriteLine("Farming Simulator wird aus der gespeicherten Datei gestartet...");
+                Environment.Exit(0);
+            }
+        }
+        else
+        {
+            Console.WriteLine("Keine passende Verknüpfung auf dem Desktop gefunden. Bitte geben Sie den Pfad zur Farming Simulator EXE an:");
+            string userPath = Console.ReadLine().Trim('"');
+            if (File.Exists(userPath))
+            {
+                File.WriteAllText(configPath, userPath);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = userPath,
+                    UseShellExecute = true
+                });
+                Console.WriteLine("Farming Simulator wird gestartet und der Pfad wurde gespeichert...");
+                Environment.Exit(0);
+            }
+            else
+            {
+                Console.WriteLine("Der eingegebene Pfad ist ungültig.");
+            }
+        }
+    }
+
+
 
     /// <summary>
     /// Vergleicht zwei Dateien, indem zunächst die Dateigrößen und anschließend die Datei-Inhalte in Blöcken verglichen werden.
