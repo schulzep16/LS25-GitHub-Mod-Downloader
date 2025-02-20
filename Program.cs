@@ -23,7 +23,7 @@ class Program
     private static readonly string ModFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
         "My Games", "FarmingSimulator2025", "mods");
-    private static readonly string CurrentVersionFile = Path.Combine(ModFolder, "current_version.txt");
+    private static readonly string CurrentVersionFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "current_version.txt");
     private static readonly string ProjectsFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "projects.json");
 
     // Liste der Projekte, die aus der JSON-Datei geladen wird
@@ -109,16 +109,36 @@ class Program
         }
         else
         {
-            // Standardprojekte, falls die Datei noch nicht existiert
-            Projects = new List<GitHubProject>
+            // Suche im Mod-Ordner nach bekannten Mods
+            var foundMods = ScanModFolderForKnownMods();
+            foreach (var mod in foundMods)
             {
-                new GitHubProject { Username = "loki79uk", Repo = "FS25_UniversalAutoload" },
-                new GitHubProject { Username = "Courseplay", Repo = "Courseplay_FS25" },
-                new GitHubProject { Username = "Stephan-S", Repo = "FS25_AutoDrive" }
-            };
+                Console.Write($"Mod {mod.Repo} wurde im Mod-Ordner gefunden. Möchten Sie ihn einbinden? (J/N): ");
+                var answer = Console.ReadLine();
+                if (!string.IsNullOrEmpty(answer) && answer.Trim().ToUpper().StartsWith("J"))
+                {
+                    Projects.Add(mod);
+                }
+            }
+            // Falls keine Mods eingebunden wurden, Frage nach den standardmäßigen Mods
+            if (Projects.Count == 0)
+            {
+                Console.Write("Es wurden keine bekannten Mods eingebunden. Möchten Sie die standardmäßig eingebundenen Mods hinzufügen? (J/N): ");
+                var answer = Console.ReadLine();
+                if (!string.IsNullOrEmpty(answer) && answer.Trim().ToUpper().StartsWith("J"))
+                {
+                    Projects = new List<GitHubProject>
+                {
+                    new GitHubProject { Username = "loki79uk", Repo = "FS25_UniversalAutoload" },
+                    new GitHubProject { Username = "Courseplay", Repo = "Courseplay_FS25" },
+                    new GitHubProject { Username = "Stephan-S", Repo = "FS25_AutoDrive" }
+                };
+                }
+            }
             await SaveProjectsAsync();
         }
     }
+
 
     static async Task SaveProjectsAsync()
     {
@@ -680,4 +700,30 @@ del ""%~f0""";
         }
         return true;
     }
+    static List<GitHubProject> ScanModFolderForKnownMods()
+    {
+        var foundProjects = new List<GitHubProject>();
+        // Definiere bekannte Mods (Mapping von Dateiname zu GitHubProject)
+        var knownMods = new Dictionary<string, GitHubProject>
+    {
+        { "FS25_UniversalAutoload", new GitHubProject { Username = "loki79uk", Repo = "FS25_UniversalAutoload" } },
+        { "Courseplay_FS25", new GitHubProject { Username = "Courseplay", Repo = "Courseplay_FS25" } },
+        { "FS25_AutoDrive", new GitHubProject { Username = "Stephan-S", Repo = "FS25_AutoDrive" } }
+    };
+
+        if (Directory.Exists(ModFolder))
+        {
+            var zipFiles = Directory.GetFiles(ModFolder, "*.zip");
+            foreach (var file in zipFiles)
+            {
+                var modName = Path.GetFileNameWithoutExtension(file);
+                if (knownMods.TryGetValue(modName, out var project))
+                {
+                    foundProjects.Add(project);
+                }
+            }
+        }
+        return foundProjects;
+    }
+
 }
