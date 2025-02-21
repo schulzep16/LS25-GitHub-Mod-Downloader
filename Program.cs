@@ -176,7 +176,7 @@ class Program
                     Projects.Add(mod);
                 }
             }
-            // Falls keine Mods eingebunden wurden, Frage nach den standardmäßigen Mods
+            // Falls keine Mods eingebunden wurden, Frage nach den standardmäßig eingebundenen Mods
             if (Projects.Count == 0)
             {
                 Console.Write("Es wurden keine bekannten Mods eingebunden. Möchten Sie die standardmäßig eingebundenen Mods hinzufügen? (J/N): ");
@@ -300,7 +300,7 @@ class Program
                 Console.WriteLine("Fortfahren mit Update.");
                 break;
         }
-        Console.WriteLine(); // Leerzeile für bessere Übersicht
+        Console.WriteLine();
     }
 
     static async Task CheckAndUpdateModAsync(GitHubProject project, Dictionary<string, string> currentVersions)
@@ -498,16 +498,7 @@ class Program
     /// </summary>
     static async Task CheckForSoftwareUpdateAsync()
     {
-        // Admin-Rechte-Check: Update darf nur durchgeführt werden, wenn das Programm als Administrator läuft.
-        if (!IsUserAdministrator())
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("Admin-Rechte erforderlich für das Update. Bitte starten Sie das Programm als Administrator.");
-            Console.ResetColor();
-            return;
-        }
-
-        // GitHub-Repository-Informationen (anpassen, falls nötig)
+        // Zunächst prüfen, ob ein Update verfügbar ist
         string username = "schulzep16";
         string repoName = "LS25-GitHub-Mod-Downloader";
 
@@ -539,139 +530,15 @@ class Program
                 {
                     Console.WriteLine("Update wird durchgeführt...");
 
-                    // Download-URL des neuen Releases (hier wird der erste Asset angenommen)
-                    string downloadUrl = release.Assets.FirstOrDefault()?.BrowserDownloadUrl;
-                    if (string.IsNullOrWhiteSpace(downloadUrl))
+                    // Falls Admin-Rechte nicht vorhanden sind, Neustart mit Admin-Rechten
+                    if (!IsUserAdministrator())
                     {
-                        Console.WriteLine("Download-URL nicht gefunden.");
+                        Console.WriteLine("Das Update benötigt Administratorrechte. Starte Programm neu mit Admin-Rechten...");
+                        RestartAsAdmin();
                         return;
                     }
 
-                    // Download des Update-Zips in einen temporären Ordner
-                    string tempZipPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update.zip");
-                    using (var updateResponse = await client.GetAsync(downloadUrl))
-                    {
-                        updateResponse.EnsureSuccessStatusCode();
-                        using (var fs = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write))
-                        {
-                            await updateResponse.Content.CopyToAsync(fs);
-                        }
-                    }
-
-                    // Falls ein Signature-Asset vorhanden ist, lade es herunter und führe die Signaturprüfung durch.
-                    var sigAsset = release.Assets.FirstOrDefault(a => a.BrowserDownloadUrl.EndsWith(".sig", StringComparison.OrdinalIgnoreCase));
-                    if (sigAsset != null)
-                    {
-                        string sigFilePath = Path.Combine(Path.GetTempPath(), $"{repoName}_update.sig");
-                        using (var sigResponse = await client.GetAsync(sigAsset.BrowserDownloadUrl))
-                        {
-                            sigResponse.EnsureSuccessStatusCode();
-                            using (var fs = new FileStream(sigFilePath, FileMode.Create, FileAccess.Write))
-                            {
-                                await sigResponse.Content.CopyToAsync(fs);
-                            }
-                        }
-                        if (!VerifyFileSignature(tempZipPath, sigFilePath))
-                        {
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine("Die Signaturprüfung des Updates ist fehlgeschlagen.");
-                            Console.ResetColor();
-                            // Aufräumen
-                            if (File.Exists(sigFilePath))
-                                File.Delete(sigFilePath);
-                            if (File.Exists(tempZipPath))
-                                File.Delete(tempZipPath);
-                            return;
-                        }
-                        // Signaturprüfung erfolgreich; Signaturdatei löschen.
-                        File.Delete(sigFilePath);
-                    }
-                    else
-                    {
-                        Console.WriteLine("Warnung: Keine Signatur gefunden. Update wird ohne Signaturprüfung durchgeführt.");
-                    }
-
-                    // Entpacke das Update in einen temporären Ordner, überspringe dabei den "Output"-Ordner
-                    string tempExtractPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update");
-                    if (Directory.Exists(tempExtractPath))
-                    {
-                        Directory.Delete(tempExtractPath, true);
-                    }
-                    Directory.CreateDirectory(tempExtractPath);
-
-                    using (ZipArchive archive = ZipFile.OpenRead(tempZipPath))
-                    {
-                        foreach (ZipArchiveEntry entry in archive.Entries)
-                        {
-                            // Überspringe alle Einträge, die im "Output"-Ordner liegen
-                            if (entry.FullName.StartsWith("Output/", StringComparison.OrdinalIgnoreCase) ||
-                                entry.FullName.StartsWith("Output\\", StringComparison.OrdinalIgnoreCase))
-                            {
-                                continue;
-                            }
-
-                            // Bestimme den kompletten Zielpfad
-                            string destinationPath = Path.Combine(tempExtractPath, entry.FullName);
-
-                            // Falls es sich um einen Ordner handelt, diesen erstellen
-                            if (string.IsNullOrEmpty(entry.Name))
-                            {
-                                Directory.CreateDirectory(destinationPath);
-                            }
-                            else
-                            {
-                                Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
-                                entry.ExtractToFile(destinationPath, overwrite: true);
-                            }
-                        }
-                    }
-
-                    // Erstelle eine Batch-Datei, die das Update anwendet
-                    string currentExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
-                    string currentDirectory = Path.GetDirectoryName(currentExecutablePath);
-                    string batchFilePath = Path.Combine(Path.GetTempPath(), "update.bat");
-                    string batchContent = $@"@echo off
-echo Warte auf Beendigung der Anwendung...
-ping 127.0.0.1 -n 5 >nul
-echo Update wird installiert...
-xcopy /Y /E ""{tempExtractPath}\*"" ""{currentDirectory}\""
-echo Update installiert.
-start """" ""{currentExecutablePath}""
-del ""%~f0""";
-                    File.WriteAllText(batchFilePath, batchContent);
-
-                    // Starte die Batch-Datei mit Admin-Rechten und warte auf deren Beendigung.
-                    var batchProcess = Process.Start(new ProcessStartInfo
-                    {
-                        FileName = batchFilePath,
-                        Verb = "runas", // Startet die Batch-Datei mit Administratorrechten
-                        WindowStyle = ProcessWindowStyle.Hidden,
-                        CreateNoWindow = true
-                    });
-                    batchProcess.WaitForExit();
-
-                    // Überprüfe, ob alle Dateien erfolgreich aktualisiert wurden.
-                    bool updateSuccessful = Directory.GetFiles(tempExtractPath, "*", SearchOption.AllDirectories)
-                        .All(tempFile =>
-                        {
-                            string relativePath = Path.GetRelativePath(tempExtractPath, tempFile);
-                            string targetFile = Path.Combine(currentDirectory, relativePath);
-                            return File.Exists(targetFile) && CompareFiles(tempFile, targetFile);
-                        });
-
-                    if (updateSuccessful)
-                    {
-                        versions["ProgramVersion"] = latestVersion;
-                        await SaveCurrentVersionsAsync(versions);
-                        Console.WriteLine("Update erfolgreich durchgeführt. Starte Anwendung neu...");
-                        // Bereinige temporäre Dateien
-                        CleanupTempFiles(new List<string> { tempZipPath, tempExtractPath, batchFilePath });
-                        Environment.Exit(0);
-                    }
-                    else
-                    {
-                        Console.WriteLine("Fehler: Nicht alle Dateien wurden erfolgreich aktualisiert.");
-                    }
+                    await PerformUpdateAsync(release, latestVersion, versions);
                 }
                 else
                 {
@@ -695,14 +562,183 @@ del ""%~f0""";
         }
     }
 
+    static void RestartAsAdmin()
+    {
+        var exePath = Process.GetCurrentProcess().MainModule.FileName;
+        var startInfo = new ProcessStartInfo(exePath)
+        {
+            Verb = "runas", // Startet mit Admin-Rechten
+            UseShellExecute = true
+        };
+        try
+        {
+            Process.Start(startInfo);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"Fehler beim Neustart als Admin: {e.Message}");
+        }
+        Environment.Exit(0);
+    }
+
+    static async Task PerformUpdateAsync(GitHubRelease release, string latestVersion, Dictionary<string, string> versions)
+    {
+        string repoName = "LS25-GitHub-Mod-Downloader";
+        string tempZipPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update.zip");
+        string tempExtractPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update");
+        string batchFilePath = Path.Combine(Path.GetTempPath(), "update.bat");
+
+        try
+        {
+            Console.WriteLine("Update wird heruntergeladen...");
+
+            string downloadUrl = release.Assets.FirstOrDefault()?.BrowserDownloadUrl;
+            if (string.IsNullOrWhiteSpace(downloadUrl))
+            {
+                Console.WriteLine("Download-URL nicht gefunden.");
+                return;
+            }
+
+            using (var updateResponse = await client.GetAsync(downloadUrl))
+            {
+                updateResponse.EnsureSuccessStatusCode();
+                using (var fs = new FileStream(tempZipPath, FileMode.Create))
+                {
+                    await updateResponse.Content.CopyToAsync(fs);
+                }
+            }
+
+            // Falls ein Signature-Asset vorhanden ist, lade es herunter und führe die Signaturprüfung durch.
+            var sigAsset = release.Assets.FirstOrDefault(a => a.BrowserDownloadUrl.EndsWith(".sig", StringComparison.OrdinalIgnoreCase));
+            if (sigAsset != null)
+            {
+                string sigFilePath = Path.Combine(Path.GetTempPath(), $"{repoName}_update.sig");
+                using (var sigResponse = await client.GetAsync(sigAsset.BrowserDownloadUrl))
+                {
+                    sigResponse.EnsureSuccessStatusCode();
+                    using (var fs = new FileStream(sigFilePath, FileMode.Create))
+                    {
+                        await sigResponse.Content.CopyToAsync(fs);
+                    }
+                }
+                if (!VerifyFileSignature(tempZipPath, sigFilePath))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Die Signaturprüfung des Updates ist fehlgeschlagen.");
+                    Console.ResetColor();
+                    // Aufräumen
+                    if (File.Exists(sigFilePath))
+                        File.Delete(sigFilePath);
+                    if (File.Exists(tempZipPath))
+                        File.Delete(tempZipPath);
+                    return;
+                }
+                // Signaturprüfung erfolgreich; Signaturdatei löschen.
+                File.Delete(sigFilePath);
+            }
+            else
+            {
+                Console.WriteLine("Warnung: Keine Signatur gefunden. Update wird ohne Signaturprüfung durchgeführt.");
+            }
+
+            // Entpacke das Update in einen temporären Ordner, überspringe dabei den "Output"-Ordner
+            if (Directory.Exists(tempExtractPath))
+            {
+                Directory.Delete(tempExtractPath, true);
+            }
+            Directory.CreateDirectory(tempExtractPath);
+
+            using (ZipArchive archive = ZipFile.OpenRead(tempZipPath))
+            {
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    // Überspringe alle Einträge, die im "Output"-Ordner liegen
+                    if (entry.FullName.StartsWith("Output/", StringComparison.OrdinalIgnoreCase) ||
+                        entry.FullName.StartsWith("Output\\", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    // Bestimme den kompletten Zielpfad
+                    string destinationPath = Path.Combine(tempExtractPath, entry.FullName);
+
+                    // Falls es sich um einen Ordner handelt, diesen erstellen
+                    if (string.IsNullOrEmpty(entry.Name))
+                    {
+                        Directory.CreateDirectory(destinationPath);
+                    }
+                    else
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
+                        entry.ExtractToFile(destinationPath, overwrite: true);
+                    }
+                }
+            }
+
+            // Erstelle eine Batch-Datei, die das Update anwendet
+            string currentExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
+            string currentDirectory = Path.GetDirectoryName(currentExecutablePath);
+            string batchContent = $@"@echo off
+echo Warte auf Beendigung der Anwendung...
+ping 127.0.0.1 -n 5 >nul
+echo Update wird installiert...
+xcopy /Y /E ""{tempExtractPath}\*"" ""{currentDirectory}\""
+echo Update installiert.
+start """" ""{currentExecutablePath}""
+del ""%~f0""";
+            File.WriteAllText(batchFilePath, batchContent);
+
+            // Starte die Batch-Datei mit Admin-Rechten und warte auf deren Beendigung.
+            var batchProcess = Process.Start(new ProcessStartInfo
+            {
+                FileName = batchFilePath,
+                Verb = "runas", // Startet die Batch-Datei mit Administratorrechten
+                WindowStyle = ProcessWindowStyle.Hidden,
+                CreateNoWindow = true
+            });
+            batchProcess.WaitForExit();
+
+            // Überprüfe, ob alle Dateien erfolgreich aktualisiert wurden.
+            string currentExecutableDir = Path.GetDirectoryName(currentExecutablePath);
+            bool updateSuccessful = Directory.GetFiles(tempExtractPath, "*", SearchOption.AllDirectories)
+                .All(tempFile =>
+                {
+                    string relativePath = Path.GetRelativePath(tempExtractPath, tempFile);
+                    string targetFile = Path.Combine(currentExecutableDir, relativePath);
+                    return File.Exists(targetFile) && CompareFiles(tempFile, targetFile);
+                });
+
+            if (updateSuccessful)
+            {
+                versions["ProgramVersion"] = latestVersion;
+                await SaveCurrentVersionsAsync(versions);
+                Console.WriteLine("Update erfolgreich durchgeführt. Starte Anwendung neu...");
+                // Bereinige temporäre Dateien
+                CleanupTempFiles(new List<string> { tempZipPath, tempExtractPath, batchFilePath });
+                Environment.Exit(0);
+            }
+            else
+            {
+                Console.WriteLine("Fehler: Nicht alle Dateien wurden erfolgreich aktualisiert.");
+            }
+        }
+        catch (Exception e)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Fehler beim Durchführen des Updates: {e.Message}");
+        }
+        finally
+        {
+            CleanupTempFiles(new List<string> { tempZipPath, tempExtractPath, batchFilePath });
+        }
+    }
+
     /// <summary>
     /// Überprüft die Signatur der heruntergeladenen Datei. 
     /// (Hier als Platzhalter – in einer produktiven Umgebung sollte hier die tatsächliche Signaturprüfung erfolgen.)
     /// </summary>
     static bool VerifyFileSignature(string filePath, string signatureFilePath)
     {
-        // Beispiel: Hier könnte eine Überprüfung mittels RSA, X509Certificate2 oder ähnlichem erfolgen.
-        // Für diese Stub-Implementierung gehen wir von einer erfolgreichen Überprüfung aus.
         Console.WriteLine("Signaturprüfung wird durchgeführt...");
         // TODO: Implementiere hier die echte Signaturprüfung.
         return true;
