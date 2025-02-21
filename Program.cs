@@ -49,15 +49,24 @@ public static class GitHubService
         {
             string url = $"https://api.github.com/repos/{username}/{repoName}/releases/latest";
             var response = await client.GetAsync(url);
-            if (!response.IsSuccessStatusCode)
-                return null;
+            response.EnsureSuccessStatusCode();
             string content = await response.Content.ReadAsStringAsync();
             var release = JsonConvert.DeserializeObject<GitHubRelease>(content);
             return release;
         }
+        catch (HttpRequestException ex)
+        {
+            Console.WriteLine($"Netzwerkfehler beim Abrufen des Releases für {username}/{repoName}: {ex.Message}");
+            return null;
+        }
+        catch (JsonException ex)
+        {
+            Console.WriteLine($"Fehler beim Deserialisieren des Releases für {username}/{repoName}: {ex.Message}");
+            return null;
+        }
         catch (Exception ex)
         {
-            Console.WriteLine($"Fehler beim Abrufen des Releases für {username}/{repoName}: {ex.Message}");
+            Console.WriteLine($"Unbekannter Fehler beim Abrufen des Releases für {username}/{repoName}: {ex.Message}");
             return null;
         }
     }
