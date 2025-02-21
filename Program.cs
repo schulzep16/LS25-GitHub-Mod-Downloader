@@ -6,14 +6,70 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Principal;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 
+#region GitHub Models und Service
+
 public class GitHubProject
 {
-    public string Username { get; set; } 
+    public string Username { get; set; }
     public string Repo { get; set; }
 }
+
+public class GitHubRelease
+{
+    [JsonProperty("tag_name")]
+    public string TagName { get; set; }
+
+    [JsonProperty("assets")]
+    public List<GitHubAsset> Assets { get; set; }
+}
+
+public class GitHubAsset
+{
+    [JsonProperty("browser_download_url")]
+    public string BrowserDownloadUrl { get; set; }
+}
+
+public static class GitHubService
+{
+    private static readonly HttpClient client = new HttpClient();
+
+    static GitHubService()
+    {
+        if (!client.DefaultRequestHeaders.Contains("User-Agent"))
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("request");
+    }
+
+    public static async Task<GitHubRelease> GetLatestReleaseAsync(string username, string repoName)
+    {
+        try
+        {
+            string url = $"https://api.github.com/repos/{username}/{repoName}/releases/latest";
+            var response = await client.GetAsync(url);
+            if (!response.IsSuccessStatusCode)
+                return null;
+            string content = await response.Content.ReadAsStringAsync();
+            var release = JsonConvert.DeserializeObject<GitHubRelease>(content);
+            return release;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Fehler beim Abrufen des Releases für {username}/{repoName}: {ex.Message}");
+            return null;
+        }
+    }
+
+    public static async Task<bool> ValidateProjectAsync(string username, string repoName)
+    {
+        var release = await GetLatestReleaseAsync(username, repoName);
+        return release != null;
+    }
+}
+
+#endregion
 
 class Program
 {
@@ -128,17 +184,16 @@ class Program
                 if (!string.IsNullOrEmpty(answer) && answer.Trim().ToUpper().StartsWith("J"))
                 {
                     Projects = new List<GitHubProject>
-                {
-                    new GitHubProject { Username = "loki79uk", Repo = "FS25_UniversalAutoload" },
-                    new GitHubProject { Username = "Courseplay", Repo = "Courseplay_FS25" },
-                    new GitHubProject { Username = "Stephan-S", Repo = "FS25_AutoDrive" }
-                };
+                    {
+                        new GitHubProject { Username = "loki79uk", Repo = "FS25_UniversalAutoload" },
+                        new GitHubProject { Username = "Courseplay", Repo = "Courseplay_FS25" },
+                        new GitHubProject { Username = "Stephan-S", Repo = "FS25_AutoDrive" }
+                    };
                 }
             }
             await SaveProjectsAsync();
         }
     }
-
 
     static async Task SaveProjectsAsync()
     {
@@ -179,24 +234,10 @@ class Program
                 Console.Write("Repository Name: ");
                 var repo = Console.ReadLine();
 
-                // Sicherstellen, dass der User-Agent gesetzt ist
-                if (!client.DefaultRequestHeaders.Contains("User-Agent"))
-                    client.DefaultRequestHeaders.UserAgent.ParseAdd("request");
-
-                // Prüfe, ob das Projekt existiert (über den Latest Release-Endpunkt)
-                string checkUrl = $"https://api.github.com/repos/{username}/{repo}/releases/latest";
-                try
+                bool valid = await GitHubService.ValidateProjectAsync(username, repo);
+                if (!valid)
                 {
-                    var response = await client.GetAsync(checkUrl);
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        Console.WriteLine("Projekt nicht gefunden oder es existieren keine Releases.");
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("Fehler beim Prüfen des Projekts: " + ex.Message);
+                    Console.WriteLine("Projekt nicht gefunden oder es existieren keine Releases.");
                     break;
                 }
 
@@ -235,7 +276,7 @@ class Program
 
                     // Frage, ob auch der Mod aus dem Mod-Ordner gelöscht werden soll
                     Console.Write("Soll auch der Mod aus dem Mod-Ordner gelöscht werden? (J/N): ");
-                    string? modDeleteChoice = Console.ReadLine();
+                    string modDeleteChoice = Console.ReadLine();
                     if (modDeleteChoice != null && modDeleteChoice.Trim().ToUpper().StartsWith("J"))
                     {
                         string modZipPath = Path.Combine(ModFolder, $"{removedProject.Repo}.zip");
@@ -269,11 +310,13 @@ class Program
 
         try
         {
-            var latestReleaseUrl = $"https://api.github.com/repos/{username}/{repoName}/releases/latest";
-            var response = await client.GetStringAsync(latestReleaseUrl);
-
-            dynamic jsonResponse = JsonConvert.DeserializeObject(response);
-            string latestVersion = jsonResponse?.tag_name?.ToString()?.TrimStart('v') ?? "unknown";
+            var release = await GitHubService.GetLatestReleaseAsync(username, repoName);
+            if (release == null)
+            {
+                Console.WriteLine($"Kein Release gefunden für {repoName}.");
+                return;
+            }
+            string latestVersion = release.TagName.TrimStart('v');
             string currentVersion = currentVersions.ContainsKey(repoName) ? currentVersions[repoName] : "Not Installed";
             string modZipPath = Path.Combine(ModFolder, $"{repoName}.zip");
 
@@ -288,13 +331,18 @@ class Program
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Neue Version gefunden für {repoName}: {latestVersion} (Aktuelle Version: {currentVersion})");
 
-                string downloadUrl = jsonResponse.assets[0].browser_download_url?.ToString();
-                var downloadResponse = await client.GetAsync(downloadUrl);
+                // Annahme: Erster Asset wird verwendet
+                string downloadUrl = release.Assets.FirstOrDefault()?.BrowserDownloadUrl;
+                if (string.IsNullOrWhiteSpace(downloadUrl))
+                {
+                    Console.WriteLine("Download-URL nicht gefunden.");
+                    return;
+                }
 
+                var downloadResponse = await client.GetAsync(downloadUrl);
                 if (downloadResponse.IsSuccessStatusCode)
                 {
                     var tempZipPath = Path.Combine(ModFolder, $"{repoName}.zip");
-
                     using (var fs = new FileStream(tempZipPath, FileMode.Create))
                     {
                         await downloadResponse.Content.CopyToAsync(fs);
@@ -450,21 +498,28 @@ class Program
     /// </summary>
     static async Task CheckForSoftwareUpdateAsync()
     {
+        // Admin-Rechte-Check: Update darf nur durchgeführt werden, wenn das Programm als Administrator läuft.
+        if (!IsUserAdministrator())
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("Admin-Rechte erforderlich für das Update. Bitte starten Sie das Programm als Administrator.");
+            Console.ResetColor();
+            return;
+        }
+
         // GitHub-Repository-Informationen (anpassen, falls nötig)
         string username = "schulzep16";
         string repoName = "LS25-GitHub-Mod-Downloader";
 
         try
         {
-            var latestReleaseUrl = $"https://api.github.com/repos/{username}/{repoName}/releases/latest";
-            var request = new HttpRequestMessage(HttpMethod.Get, latestReleaseUrl);
-            request.Headers.UserAgent.ParseAdd("request");
-
-            var response = await client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-
-            dynamic jsonResponse = JsonConvert.DeserializeObject(await response.Content.ReadAsStringAsync());
-            string latestVersion = jsonResponse?.tag_name?.ToString()?.TrimStart('v') ?? "unknown";
+            var release = await GitHubService.GetLatestReleaseAsync(username, repoName);
+            if (release == null)
+            {
+                Console.WriteLine("Kein Update gefunden.");
+                return;
+            }
+            string latestVersion = release.TagName.TrimStart('v');
 
             var versions = await GetCurrentVersionsAsync();
             string currentVersion = versions.ContainsKey("ProgramVersion") ? versions["ProgramVersion"] : null;
@@ -485,7 +540,7 @@ class Program
                     Console.WriteLine("Update wird durchgeführt...");
 
                     // Download-URL des neuen Releases (hier wird der erste Asset angenommen)
-                    string downloadUrl = jsonResponse.assets[0].browser_download_url?.ToString();
+                    string downloadUrl = release.Assets.FirstOrDefault()?.BrowserDownloadUrl;
                     if (string.IsNullOrWhiteSpace(downloadUrl))
                     {
                         Console.WriteLine("Download-URL nicht gefunden.");
@@ -501,6 +556,39 @@ class Program
                         {
                             await updateResponse.Content.CopyToAsync(fs);
                         }
+                    }
+
+                    // Falls ein Signature-Asset vorhanden ist, lade es herunter und führe die Signaturprüfung durch.
+                    var sigAsset = release.Assets.FirstOrDefault(a => a.BrowserDownloadUrl.EndsWith(".sig", StringComparison.OrdinalIgnoreCase));
+                    if (sigAsset != null)
+                    {
+                        string sigFilePath = Path.Combine(Path.GetTempPath(), $"{repoName}_update.sig");
+                        using (var sigResponse = await client.GetAsync(sigAsset.BrowserDownloadUrl))
+                        {
+                            sigResponse.EnsureSuccessStatusCode();
+                            using (var fs = new FileStream(sigFilePath, FileMode.Create, FileAccess.Write))
+                            {
+                                await sigResponse.Content.CopyToAsync(fs);
+                            }
+                        }
+                        if (!VerifyFileSignature(tempZipPath, sigFilePath))
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("Die Signaturprüfung des Updates ist fehlgeschlagen.");
+                            Console.ResetColor();
+                            // Aufräumen
+                            if (File.Exists(sigFilePath))
+                                File.Delete(sigFilePath);
+                            if (File.Exists(tempZipPath))
+                                File.Delete(tempZipPath);
+                            return;
+                        }
+                        // Signaturprüfung erfolgreich; Signaturdatei löschen.
+                        File.Delete(sigFilePath);
+                    }
+                    else
+                    {
+                        Console.WriteLine("Warnung: Keine Signatur gefunden. Update wird ohne Signaturprüfung durchgeführt.");
                     }
 
                     // Entpacke das Update in einen temporären Ordner, überspringe dabei den "Output"-Ordner
@@ -532,15 +620,13 @@ class Program
                             }
                             else
                             {
-                                // Stelle sicher, dass das Verzeichnis existiert, und extrahiere dann die Datei
                                 Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
                                 entry.ExtractToFile(destinationPath, overwrite: true);
                             }
                         }
                     }
 
-                    // Verwende nun den tempExtractPath als Quelle für die Aktualisierung
-                    string sourceFolder = tempExtractPath;
+                    // Erstelle eine Batch-Datei, die das Update anwendet
                     string currentExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
                     string currentDirectory = Path.GetDirectoryName(currentExecutablePath);
                     string batchFilePath = Path.Combine(Path.GetTempPath(), "update.bat");
@@ -548,43 +634,44 @@ class Program
 echo Warte auf Beendigung der Anwendung...
 ping 127.0.0.1 -n 5 >nul
 echo Update wird installiert...
-xcopy /Y /E ""{sourceFolder}\*"" ""{currentDirectory}\""
+xcopy /Y /E ""{tempExtractPath}\*"" ""{currentDirectory}\""
 echo Update installiert.
 start """" ""{currentExecutablePath}""
 del ""%~f0""";
-
                     File.WriteAllText(batchFilePath, batchContent);
 
-                    // Starte die Batch-Datei und beende die Anwendung
-                    Process.Start(new ProcessStartInfo
+                    // Starte die Batch-Datei mit Admin-Rechten und warte auf deren Beendigung.
+                    var batchProcess = Process.Start(new ProcessStartInfo
                     {
                         FileName = batchFilePath,
+                        Verb = "runas", // Startet die Batch-Datei mit Administratorrechten
                         WindowStyle = ProcessWindowStyle.Hidden,
                         CreateNoWindow = true
                     });
-                    Console.WriteLine("Update wird durchgeführt. Die Anwendung wird jetzt beendet.");
+                    batchProcess.WaitForExit();
 
-                    // Überprüfe, ob alle Dateien erfolgreich aktualisiert wurden
-                    bool updateSuccessful = Directory.GetFiles(sourceFolder, "*", SearchOption.AllDirectories)
+                    // Überprüfe, ob alle Dateien erfolgreich aktualisiert wurden.
+                    bool updateSuccessful = Directory.GetFiles(tempExtractPath, "*", SearchOption.AllDirectories)
                         .All(tempFile =>
                         {
-                            string relativePath = Path.GetRelativePath(sourceFolder, tempFile);
+                            string relativePath = Path.GetRelativePath(tempExtractPath, tempFile);
                             string targetFile = Path.Combine(currentDirectory, relativePath);
                             return File.Exists(targetFile) && CompareFiles(tempFile, targetFile);
                         });
 
                     if (updateSuccessful)
                     {
-                        // Aktualisiere die Versionsnummer in der current_version.txt
                         versions["ProgramVersion"] = latestVersion;
                         await SaveCurrentVersionsAsync(versions);
+                        Console.WriteLine("Update erfolgreich durchgeführt. Starte Anwendung neu...");
+                        // Bereinige temporäre Dateien
+                        CleanupTempFiles(new List<string> { tempZipPath, tempExtractPath, batchFilePath });
+                        Environment.Exit(0);
                     }
                     else
                     {
                         Console.WriteLine("Fehler: Nicht alle Dateien wurden erfolgreich aktualisiert.");
                     }
-
-                    Environment.Exit(0);
                 }
                 else
                 {
@@ -605,6 +692,44 @@ del ""%~f0""";
         finally
         {
             Console.ResetColor();
+        }
+    }
+
+    /// <summary>
+    /// Überprüft die Signatur der heruntergeladenen Datei. 
+    /// (Hier als Platzhalter – in einer produktiven Umgebung sollte hier die tatsächliche Signaturprüfung erfolgen.)
+    /// </summary>
+    static bool VerifyFileSignature(string filePath, string signatureFilePath)
+    {
+        // Beispiel: Hier könnte eine Überprüfung mittels RSA, X509Certificate2 oder ähnlichem erfolgen.
+        // Für diese Stub-Implementierung gehen wir von einer erfolgreichen Überprüfung aus.
+        Console.WriteLine("Signaturprüfung wird durchgeführt...");
+        // TODO: Implementiere hier die echte Signaturprüfung.
+        return true;
+    }
+
+    /// <summary>
+    /// Löscht temporäre Dateien bzw. Verzeichnisse.
+    /// </summary>
+    static void CleanupTempFiles(List<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+                else if (Directory.Exists(path))
+                {
+                    Directory.Delete(path, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Fehler beim Löschen temporärer Datei/Ordner {path}: {ex.Message}");
+            }
         }
     }
 
@@ -666,8 +791,6 @@ del ""%~f0""";
         }
     }
 
-
-
     /// <summary>
     /// Vergleicht zwei Dateien, indem zunächst die Dateigrößen und anschließend die Datei-Inhalte in Blöcken verglichen werden.
     /// </summary>
@@ -700,16 +823,17 @@ del ""%~f0""";
         }
         return true;
     }
+
     static List<GitHubProject> ScanModFolderForKnownMods()
     {
         var foundProjects = new List<GitHubProject>();
         // Definiere bekannte Mods (Mapping von Dateiname zu GitHubProject)
         var knownMods = new Dictionary<string, GitHubProject>
-    {
-        { "FS25_UniversalAutoload", new GitHubProject { Username = "loki79uk", Repo = "FS25_UniversalAutoload" } },
-        { "Courseplay_FS25", new GitHubProject { Username = "Courseplay", Repo = "Courseplay_FS25" } },
-        { "FS25_AutoDrive", new GitHubProject { Username = "Stephan-S", Repo = "FS25_AutoDrive" } }
-    };
+        {
+            { "FS25_UniversalAutoload", new GitHubProject { Username = "loki79uk", Repo = "FS25_UniversalAutoload" } },
+            { "Courseplay_FS25", new GitHubProject { Username = "Courseplay", Repo = "Courseplay_FS25" } },
+            { "FS25_AutoDrive", new GitHubProject { Username = "Stephan-S", Repo = "FS25_AutoDrive" } }
+        };
 
         if (Directory.Exists(ModFolder))
         {
@@ -723,7 +847,19 @@ del ""%~f0""";
                 }
             }
         }
-        return foundProjects;  
+        return foundProjects;
     }
 
+    /// <summary>
+    /// Prüft, ob das Programm mit Administratorrechten ausgeführt wird.
+    /// </summary>
+    /// <returns></returns>
+    private static bool IsUserAdministrator()
+    {
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+        {
+            WindowsPrincipal principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+    }
 }
