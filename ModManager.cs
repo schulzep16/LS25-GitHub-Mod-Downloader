@@ -241,6 +241,8 @@ namespace LS25ModDownloader
                     {
                         Log.Information("{RepoName} erfolgreich aktualisiert auf Version {LatestVersion}", repoName, latestVersion);
                         versions[repoName] = latestVersion;
+                        // Versionsdaten in die current_version.txt speichern:
+                        await _versionManager.SaveCurrentVersionsAsync(versions);
                     }
                     else
                     {
@@ -259,33 +261,29 @@ namespace LS25ModDownloader
             }
         }
 
+        /// <summary>
+        /// Liest die Versionsnummer aus dem Zip-Archiv aus – zuerst aus "modesc.xml", falls vorhanden, sonst aus "modDesc.xml".
+        /// </summary>
         private async Task<string> ExtractVersionFromZipAsync(string zipPath)
         {
-            try
+            using (var zip = ZipFile.OpenRead(zipPath))
             {
-                using (var zip = ZipFile.OpenRead(zipPath))
+                // Suche nach einer Datei, deren Name (unabhängig vom Pfad) "modesc.xml" oder "modDesc.xml" entspricht.
+                var entry = zip.Entries.FirstOrDefault(e =>
+                                e.FullName.EndsWith("modDesc.xml", StringComparison.OrdinalIgnoreCase));
+                if (entry != null)
                 {
-                    var entry = zip.GetEntry("modDesc.xml");
-                    if (entry != null)
+                    using (var stream = entry.Open())
                     {
-                        using (var stream = entry.Open())
-                        {
-                            var doc = XDocument.Load(stream);
-                            return doc.Root?.Element("version")?.Value ?? "0.0.0";
-                        }
-                    }
-                    else
-                    {
-                        return "0.0.0";
+                        var doc = XDocument.Load(stream);
+                        // Lies den Inhalt des <version>-Elements aus
+                        return doc.Root?.Element("version")?.Value ?? "unknown";
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Fehler beim Extrahieren der Version aus {ZipPath}", zipPath);
-                return "0.0.0";
+                return "unknown";
             }
         }
+
 
         private List<GitHubProject> ScanModFolderForKnownMods()
         {
