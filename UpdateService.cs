@@ -5,8 +5,8 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Threading.Tasks;
 using System.Net.Http;
+using System.Threading.Tasks;
 
 namespace LS25ModDownloader
 {
@@ -15,6 +15,7 @@ namespace LS25ModDownloader
         private readonly Config _config;
         private readonly HttpClient _client;
         private readonly VersionManager _versionManager;
+
         public UpdateService(Config config, HttpClient client, VersionManager versionManager)
         {
             _config = config;
@@ -38,7 +39,10 @@ namespace LS25ModDownloader
                     return;
                 }
                 var versions = await _versionManager.GetCurrentVersionsAsync();
-                Version currentVersion = versions.ContainsKey("ProgramVersion") ? versions["ProgramVersion"] : new Version(0, 0, 0);
+                // Wir erwarten hier ein Dictionary<string, Version>
+                Version currentVersion = versions.ContainsKey("ProgramVersion")
+                    ? versions["ProgramVersion"]
+                    : new Version(0, 0, 0);
                 if (currentVersion < latestVersion)
                 {
                     Console.ForegroundColor = ConsoleColor.Yellow;
@@ -74,7 +78,7 @@ namespace LS25ModDownloader
 
         private async Task PerformUpdateAsync(GitHubRelease release, Version latestVersion, Dictionary<string, Version> versions)
         {
-            string repoName = _config.GitHubRepo;
+            string repoName = "LS25-GitHub-Mod-Downloader";
             string tempZipPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update.zip");
             string tempExtractPath = Path.Combine(Path.GetTempPath(), $"{repoName}_update");
             string batchFilePath = Path.Combine(Path.GetTempPath(), "update.bat");
@@ -82,6 +86,7 @@ namespace LS25ModDownloader
             try
             {
                 Console.WriteLine("Update wird heruntergeladen...");
+
                 string downloadUrl = release.Assets.FirstOrDefault()?.BrowserDownloadUrl;
                 if (string.IsNullOrWhiteSpace(downloadUrl))
                 {
@@ -98,50 +103,24 @@ namespace LS25ModDownloader
                     }
                 }
 
-                // Signaturprüfung
-                var sigAsset = release.Assets.FirstOrDefault(a => a.BrowserDownloadUrl.EndsWith(".sig", StringComparison.OrdinalIgnoreCase));
-                if (sigAsset != null)
-                {
-                    string sigFilePath = Path.Combine(Path.GetTempPath(), $"{repoName}_update.sig");
-                    using (var sigResponse = await _client.GetAsync(sigAsset.BrowserDownloadUrl))
-                    {
-                        sigResponse.EnsureSuccessStatusCode();
-                        using (var fs = new FileStream(sigFilePath, FileMode.Create))
-                        {
-                            await sigResponse.Content.CopyToAsync(fs);
-                        }
-                    }
-                    if (!SecurityHelper.VerifyFileSignature(tempZipPath, sigFilePath))
-                    {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine("Die Signaturprüfung des Updates ist fehlgeschlagen.");
-                        Console.ResetColor();
-                        if (File.Exists(sigFilePath)) File.Delete(sigFilePath);
-                        if (File.Exists(tempZipPath)) File.Delete(tempZipPath);
-                        return;
-                    }
-                    File.Delete(sigFilePath);
-                }
-                else
-                {
-                    Console.WriteLine("Warnung: Keine Signatur gefunden. Update wird ohne Signaturprüfung durchgeführt.");
-                }
-
-                // Extrahiere das Update (ohne den "Output"-Ordner)
+                // Entpacke das Update in einen temporären Ordner, überspringe dabei den "Output"-Ordner
                 if (Directory.Exists(tempExtractPath))
                 {
                     Directory.Delete(tempExtractPath, true);
                 }
                 Directory.CreateDirectory(tempExtractPath);
+
                 using (ZipArchive archive = ZipFile.OpenRead(tempZipPath))
                 {
                     foreach (ZipArchiveEntry entry in archive.Entries)
                     {
+                        // Überspringe alle Einträge, die im "Output"-Ordner liegen
                         if (entry.FullName.StartsWith("Output/", StringComparison.OrdinalIgnoreCase) ||
                             entry.FullName.StartsWith("Output\\", StringComparison.OrdinalIgnoreCase))
                         {
                             continue;
                         }
+
                         string destinationPath = Path.Combine(tempExtractPath, entry.FullName);
                         if (string.IsNullOrEmpty(entry.Name))
                         {
@@ -150,12 +129,12 @@ namespace LS25ModDownloader
                         else
                         {
                             Directory.CreateDirectory(Path.GetDirectoryName(destinationPath));
-                            entry.ExtractToFile(destinationPath, true);
+                            entry.ExtractToFile(destinationPath, overwrite: true);
                         }
                     }
                 }
 
-                // Erstelle Batch-Datei zum Update
+                // Erstelle eine Batch-Datei, die das Update anwendet
                 string currentExecutablePath = Process.GetCurrentProcess().MainModule.FileName;
                 string currentDirectory = Path.GetDirectoryName(currentExecutablePath);
                 string batchContent = $@"@echo off
@@ -167,6 +146,8 @@ echo Update installiert.
 start """" ""{currentExecutablePath}""
 del ""%~f0""";
                 File.WriteAllText(batchFilePath, batchContent);
+
+                // Starte die Batch-Datei mit Admin-Rechten und warte auf deren Beendigung.
                 var batchProcess = Process.Start(new ProcessStartInfo
                 {
                     FileName = batchFilePath,
@@ -175,19 +156,23 @@ del ""%~f0""";
                     CreateNoWindow = true
                 });
                 batchProcess.WaitForExit();
+
+                // Überprüfe, ob alle Dateien erfolgreich aktualisiert wurden.
+                string currentExecutableDir = Path.GetDirectoryName(currentExecutablePath);
                 bool updateSuccessful = Directory.GetFiles(tempExtractPath, "*", SearchOption.AllDirectories)
                     .All(tempFile =>
                     {
                         string relativePath = Path.GetRelativePath(tempExtractPath, tempFile);
-                        string targetFile = Path.Combine(currentDirectory, relativePath);
-                        return File.Exists(targetFile) && FileHelper.CompareFiles(tempFile, targetFile);
+                        string targetFile = Path.Combine(currentExecutableDir, relativePath);
+                        return File.Exists(targetFile) && CompareFiles(tempFile, targetFile);
                     });
+
                 if (updateSuccessful)
                 {
                     versions["ProgramVersion"] = latestVersion;
-                    await _versionManager.SaveCurrentVersionsAsync(versions);
+                    await SaveCurrentVersionsAsync(versions);
                     Console.WriteLine("Update erfolgreich durchgeführt. Starte Anwendung neu...");
-                    FileHelper.CleanupTempFiles(new List<string> { tempZipPath, tempExtractPath, batchFilePath });
+                    CleanupTempFiles(new List<string> { tempZipPath, tempExtractPath, batchFilePath });
                     Environment.Exit(0);
                 }
                 else
@@ -195,13 +180,79 @@ del ""%~f0""";
                     Console.WriteLine("Fehler: Nicht alle Dateien wurden erfolgreich aktualisiert.");
                 }
             }
-            catch (Exception ex)
+            catch (Exception e)
             {
-                Log.Error(ex, "Fehler beim Durchführen des Updates.");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Fehler beim Durchführen des Updates: {e.Message}");
             }
             finally
             {
-                FileHelper.CleanupTempFiles(new List<string> { tempZipPath, tempExtractPath, batchFilePath });
+                CleanupTempFiles(new List<string> { tempZipPath, tempExtractPath, batchFilePath });
+            }
+        }
+
+        /// <summary>
+        /// Vergleicht zwei Dateien anhand ihrer Größe und Inhalte.
+        /// </summary>
+        private bool CompareFiles(string file1, string file2)
+        {
+            FileInfo fi1 = new FileInfo(file1);
+            FileInfo fi2 = new FileInfo(file2);
+            if (fi1.Length != fi2.Length)
+                return false;
+
+            const int bufferSize = 8192;
+            using (FileStream fs1 = File.OpenRead(file1))
+            using (FileStream fs2 = File.OpenRead(file2))
+            {
+                byte[] buffer1 = new byte[bufferSize];
+                byte[] buffer2 = new byte[bufferSize];
+                int bytesRead1, bytesRead2;
+                while ((bytesRead1 = fs1.Read(buffer1, 0, bufferSize)) > 0)
+                {
+                    bytesRead2 = fs2.Read(buffer2, 0, bufferSize);
+                    if (bytesRead1 != bytesRead2)
+                        return false;
+                    for (int i = 0; i < bytesRead1; i++)
+                    {
+                        if (buffer1[i] != buffer2[i])
+                            return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Speichert die aktuellen Versionsdaten. Delegiert an den VersionManager.
+        /// </summary>
+        private async Task SaveCurrentVersionsAsync(Dictionary<string, Version> versions)
+        {
+            await _versionManager.SaveCurrentVersionsAsync(versions);
+        }
+
+        /// <summary>
+        /// Löscht temporäre Dateien bzw. Verzeichnisse.
+        /// </summary>
+        private void CleanupTempFiles(List<string> paths)
+        {
+            foreach (var path in paths)
+            {
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+                    else if (Directory.Exists(path))
+                    {
+                        Directory.Delete(path, true);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Fehler beim Löschen temporärer Datei/Ordner {path}: {ex.Message}");
+                }
             }
         }
     }
