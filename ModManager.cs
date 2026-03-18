@@ -211,8 +211,12 @@ namespace LS25ModDownloader
                     return;
                 }
                 Version currentVersion = versions.ContainsKey(repoName) ? versions[repoName] : new Version(0, 0, 0);
-                string modZipPath = Path.Combine(_config.ModFolder, $"{repoName}.zip");
-                if (!File.Exists(modZipPath))
+
+                // Prüfe ob eine Mod-Datei im Mod-Ordner vorhanden ist (beliebiger Name)
+                bool modFileExists = Directory.EnumerateFiles(_config.ModFolder, "*.zip")
+                    .Any(f => Path.GetFileNameWithoutExtension(f).Equals(repoName, StringComparison.OrdinalIgnoreCase)
+                           || Path.GetFileName(f).StartsWith(repoName.Replace("_FS25", "").Replace("FS25_", ""), StringComparison.OrdinalIgnoreCase));
+                if (!modFileExists)
                 {
                     currentVersion = new Version(0, 0, 0);
                     versions[repoName] = currentVersion;
@@ -226,6 +230,21 @@ namespace LS25ModDownloader
                         Console.WriteLine("Download-URL nicht gefunden.");
                         return;
                     }
+
+                    // Dateiname direkt von GitHub übernehmen (z.B. FS25_Courseplay.zip)
+                    string assetFileName = Path.GetFileName(new Uri(downloadUrl).LocalPath);
+                    string modZipPath = Path.Combine(_config.ModFolder, assetFileName);
+
+                    // Alle vorhandenen Zips dieses Mods löschen (verhindert Duplikate)
+                    foreach (var oldFile in Directory.EnumerateFiles(_config.ModFolder, "*.zip")
+                        .Where(f => !f.Equals(modZipPath, StringComparison.OrdinalIgnoreCase)
+                                 && (Path.GetFileNameWithoutExtension(f).Equals(repoName, StringComparison.OrdinalIgnoreCase)
+                                  || Path.GetFileName(f).StartsWith(repoName.Replace("_FS25", "").Replace("FS25_", ""), StringComparison.OrdinalIgnoreCase))))
+                    {
+                        Log.Information("Lösche alte Mod-Datei: {OldFile}", oldFile);
+                        File.Delete(oldFile);
+                    }
+
                     var downloadResponse = await _client.GetAsync(downloadUrl);
                     downloadResponse.EnsureSuccessStatusCode();
                     using (var fs = new FileStream(modZipPath, FileMode.Create))
