@@ -13,7 +13,7 @@ namespace LS25ModDownloader
             string configPath = Path.Combine(exeDirectory, "farming_simulator_path.txt");
             string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             string[] shortcutFiles = Directory.GetFiles(desktopPath, "*.lnk");
-            string farmingSimulatorShortcut = shortcutFiles.FirstOrDefault(f => Path.GetFileName(f).Contains("Farming Simulator"));
+            string? farmingSimulatorShortcut = shortcutFiles.FirstOrDefault(f => Path.GetFileName(f).Contains("Farming Simulator"));
             if (farmingSimulatorShortcut != null)
             {
                 Process.Start(new ProcessStartInfo
@@ -41,7 +41,7 @@ namespace LS25ModDownloader
             else
             {
                 Console.WriteLine("Keine passende Verknüpfung auf dem Desktop gefunden. Bitte geben Sie den Pfad zur Farming Simulator EXE an:");
-                string userPath = Console.ReadLine().Trim('"');
+                string userPath = (Console.ReadLine() ?? string.Empty).Trim('"');
                 if (File.Exists(userPath))
                 {
                     File.WriteAllText(configPath, userPath);

@@ -1,6 +1,7 @@
 ﻿using System;
-using System.Security.Principal;
 using System.Diagnostics;
+using System.Runtime.Versioning;
+using System.Security.Principal;
 
 namespace LS25ModDownloader
 {
@@ -10,21 +11,22 @@ namespace LS25ModDownloader
         {
             Console.Write(message);
             var input = Console.ReadLine();
-            return !string.IsNullOrEmpty(input) && input.Trim().ToUpper().StartsWith("J");
+            return !string.IsNullOrEmpty(input) && input.Trim().StartsWith("J", StringComparison.OrdinalIgnoreCase);
         }
 
+        [SupportedOSPlatform("windows")]
         public static bool IsUserAdministrator()
         {
-            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
-            {
-                WindowsPrincipal principal = new WindowsPrincipal(identity);
-                return principal.IsInRole(WindowsBuiltInRole.Administrator);
-            }
+            using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+            WindowsPrincipal principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
         }
 
+        [SupportedOSPlatform("windows")]
         public static void RestartAsAdmin()
         {
-            var exePath = Process.GetCurrentProcess().MainModule.FileName;
+            string exePath = Process.GetCurrentProcess().MainModule?.FileName
+                ?? throw new InvalidOperationException("Konnte Pfad zur ausführbaren Datei nicht ermitteln.");
             var startInfo = new ProcessStartInfo(exePath)
             {
                 Verb = "runas",

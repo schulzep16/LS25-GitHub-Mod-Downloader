@@ -25,11 +25,8 @@ namespace LS25ModDownloader
                     bytesRead2 = fs2.Read(buffer2, 0, bufferSize);
                     if (bytesRead1 != bytesRead2)
                         return false;
-                    for (int i = 0; i < bytesRead1; i++)
-                    {
-                        if (buffer1[i] != buffer2[i])
-                            return false;
-                    }
+                    if (!buffer1.AsSpan(0, bytesRead1).SequenceEqual(buffer2.AsSpan(0, bytesRead2)))
+                        return false;
                 }
             }
             return true;

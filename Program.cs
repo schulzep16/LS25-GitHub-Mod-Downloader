@@ -11,9 +11,9 @@ namespace LS25ModDownloader
         {
             // Konfiguration des Loggings mit Serilog
             Log.Logger = new LoggerConfiguration()
-                .MinimumLevel.Debug()
-                .WriteTo.Console()
-                .WriteTo.File("logs/log.txt", rollingInterval: RollingInterval.Day)
+                .MinimumLevel.Information()
+                .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+                .WriteTo.File("logs/log.txt", rollingInterval: RollingInterval.Day, retainedFileCountLimit: 7)
                 .CreateLogger();
 
             try
@@ -48,10 +48,6 @@ namespace LS25ModDownloader
                 {
                     await modManager.CheckAndUpdateModAsync(project);
                 }
-
-                // Hole die aktuellen Versionen und speichere sie
-                var versions = await versionManager.GetCurrentVersionsAsync();
-                await versionManager.SaveCurrentVersionsAsync(versions);
 
                 // Startet den Farming Simulator, falls gewünscht
                 if (UserInteraction.AskYesNo("Möchten Sie den Farming Simulator 2025 starten? (J/N): "))

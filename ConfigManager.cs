@@ -7,11 +7,11 @@ namespace LS25ModDownloader
 {
     public class Config
     {
-        public string ModFolder { get; set; }
-        public string CurrentVersionFile { get; set; }
-        public string ProjectsFile { get; set; }
-        public string GitHubUser { get; set; }
-        public string GitHubRepo { get; set; }
+        public required string ModFolder { get; set; }
+        public required string CurrentVersionFile { get; set; }
+        public required string ProjectsFile { get; set; }
+        public required string GitHubUser { get; set; }
+        public required string GitHubRepo { get; set; }
         // Weitere Konfigurationseinstellungen können hier ergänzt werden
     }
 
@@ -22,7 +22,8 @@ namespace LS25ModDownloader
             if (File.Exists(path))
             {
                 var json = await File.ReadAllTextAsync(path);
-                return JsonSerializer.Deserialize<Config>(json);
+                return JsonSerializer.Deserialize<Config>(json)
+                    ?? throw new InvalidOperationException($"Konfigurationsdatei '{path}' konnte nicht gelesen werden.");
             }
             else
             {

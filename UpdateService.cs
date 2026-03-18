@@ -61,7 +61,15 @@ namespace LS25ModDownloader
                     var key = Console.ReadKey(true);
                     if (key.Key == ConsoleKey.Enter)
                     {
-                        await InitiateUpdateAsync(release, latestVersion, versions);
+                        if (OperatingSystem.IsWindows())
+                        {
+                            await InitiateUpdateAsync(release, latestVersion, versions);
+                        }
+                        else
+                        {
+                            Log.Warning("Automatisches Update wird nur unter Windows unterstützt.");
+                            Console.WriteLine("Automatisches Update wird nur unter Windows unterstützt. Bitte manuell aktualisieren.");
+                        }
                     }
                     else
                     {
@@ -96,6 +104,7 @@ namespace LS25ModDownloader
         /// <summary>
         /// Initiiert den Update-Prozess mit Admin-Rechte-Prüfung.
         /// </summary>
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
         private async Task InitiateUpdateAsync(GitHubRelease release, Version latestVersion, Dictionary<string, Version> versions)
         {
             Log.Information("Update wird durchgeführt...");
@@ -146,14 +155,14 @@ namespace LS25ModDownloader
 
                 // Speichere neue Version VOR dem Neustart
                 versions[ProgramVersionKey] = latestVersion;
-                await SaveCurrentVersionsAsync(versions);
+                await _versionManager.SaveCurrentVersionsAsync(versions);
                 Log.Information("Neue Version {Version} gespeichert.", latestVersion);
 
                 // Starte Batch und beende Anwendung
                 Log.Information("Starte Update-Batch und beende Anwendung...");
                 Console.WriteLine("Update wird installiert. Die Anwendung wird neu gestartet...");
 
-                StartUpdateBatchAndExit(batchFilePath);
+                await StartUpdateBatchAndExitAsync(batchFilePath);
             }
             catch (HttpRequestException ex)
             {
@@ -195,14 +204,11 @@ namespace LS25ModDownloader
             Console.WriteLine("Update wird heruntergeladen...");
             Log.Information("Lade Update herunter von: {Url}", downloadUrl);
 
-            using (var updateResponse = await _client.GetAsync(downloadUrl))
-            {
-                updateResponse.EnsureSuccessStatusCode();
-                await using (var fs = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    await updateResponse.Content.CopyToAsync(fs);
-                }
-            }
+            using var updateResponse = await _client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
+            updateResponse.EnsureSuccessStatusCode();
+            await using var stream = await updateResponse.Content.ReadAsStreamAsync();
+            await using var fs = new FileStream(tempZipPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 8192, useAsync: true);
+            await stream.CopyToAsync(fs);
 
             Log.Information("Update heruntergeladen: {Size} Bytes", new FileInfo(tempZipPath).Length);
         }
@@ -301,7 +307,7 @@ del ""%~f0""";
         /// <summary>
         /// Startet die Update-Batch-Datei und beendet die Anwendung.
         /// </summary>
-        private void StartUpdateBatchAndExit(string batchFilePath)
+        private async Task StartUpdateBatchAndExitAsync(string batchFilePath)
         {
             try
             {
@@ -316,9 +322,8 @@ del ""%~f0""";
                 Process.Start(startInfo);
                 Log.Information("Update-Batch gestartet. Beende Anwendung.");
 
-                // Kurz warten, damit Batch starten kann
-                Task.Delay(500).Wait();
-                
+                await Task.Delay(500);
+
                 Environment.Exit(0);
             }
             catch (Exception ex)
@@ -326,65 +331,6 @@ del ""%~f0""";
                 Log.Error(ex, "Fehler beim Starten der Update-Batch-Datei.");
                 throw;
             }
-        }
-
-        /// <summary>
-        /// Vergleicht zwei Dateien anhand ihrer Größe und Inhalte.
-        /// </summary>
-        private bool CompareFiles(string file1, string file2)
-        {
-            try
-            {
-                if (!File.Exists(file1) || !File.Exists(file2))
-                {
-                    return false;
-                }
-
-                FileInfo fi1 = new FileInfo(file1);
-                FileInfo fi2 = new FileInfo(file2);
-                
-                if (fi1.Length != fi2.Length)
-                {
-                    return false;
-                }
-
-                using (FileStream fs1 = File.OpenRead(file1))
-                using (FileStream fs2 = File.OpenRead(file2))
-                {
-                    byte[] buffer1 = new byte[FileCompareBufferSize];
-                    byte[] buffer2 = new byte[FileCompareBufferSize];
-                    int bytesRead1, bytesRead2;
-                    
-                    while ((bytesRead1 = fs1.Read(buffer1, 0, FileCompareBufferSize)) > 0)
-                    {
-                        bytesRead2 = fs2.Read(buffer2, 0, FileCompareBufferSize);
-                        if (bytesRead1 != bytesRead2)
-                        {
-                            return false;
-                        }
-                        
-                        if (!buffer1.AsSpan(0, bytesRead1).SequenceEqual(buffer2.AsSpan(0, bytesRead2)))
-                        {
-                            return false;
-                        }
-                    }
-                }
-                
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Fehler beim Vergleichen der Dateien {File1} und {File2}", file1, file2);
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Speichert die aktuellen Versionsdaten. Delegiert an den VersionManager.
-        /// </summary>
-        private async Task SaveCurrentVersionsAsync(Dictionary<string, Version> versions)
-        {
-            await _versionManager.SaveCurrentVersionsAsync(versions);
         }
 
         /// <summary>

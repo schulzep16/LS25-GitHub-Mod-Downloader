@@ -1,13 +1,13 @@
-﻿using Newtonsoft.Json;
-using Serilog;
+﻿using Serilog;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Xml.Linq;
-using System.Net.Http;
 
 namespace LS25ModDownloader
 {
@@ -31,8 +31,8 @@ namespace LS25ModDownloader
             {
                 try
                 {
-                    var json = await File.ReadAllTextAsync(_config.ProjectsFile);
-                    Projects = JsonConvert.DeserializeObject<List<GitHubProject>>(json);
+                    await using var stream = File.OpenRead(_config.ProjectsFile);
+                    Projects = await JsonSerializer.DeserializeAsync<List<GitHubProject>>(stream) ?? new List<GitHubProject>();
                 }
                 catch (Exception ex)
                 {
@@ -63,8 +63,8 @@ namespace LS25ModDownloader
         {
             try
             {
-                var json = JsonConvert.SerializeObject(Projects, Formatting.Indented);
-                await File.WriteAllTextAsync(_config.ProjectsFile, json);
+                await using var stream = File.Create(_config.ProjectsFile);
+                await JsonSerializer.SerializeAsync(stream, Projects, new JsonSerializerOptions { WriteIndented = true });
             }
             catch (Exception ex)
             {
@@ -104,6 +104,11 @@ namespace LS25ModDownloader
                     var username = Console.ReadLine();
                     Console.Write("Repository Name: ");
                     var repo = Console.ReadLine();
+                    if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(repo))
+                    {
+                        Console.WriteLine("Username und Repository-Name dürfen nicht leer sein.");
+                        break;
+                    }
                     bool valid = await GitHubService.ValidateProjectAsync(_client, username, repo);
                     if (!valid)
                     {
@@ -141,11 +146,17 @@ namespace LS25ModDownloader
                         }
                         if (UserInteraction.AskYesNo("Soll auch der Mod aus dem Mod-Ordner gelöscht werden? (J/N): "))
                         {
-                            string modZipPath = Path.Combine(_config.ModFolder, $"{removedProject.Repo}.zip");
-                            if (File.Exists(modZipPath))
+                            var deletedFiles = Directory.EnumerateFiles(_config.ModFolder, "*.zip")
+                                .Where(f => Path.GetFileNameWithoutExtension(f).Equals(removedProject.Repo, StringComparison.OrdinalIgnoreCase))
+                                .ToList();
+                            if (deletedFiles.Count > 0)
                             {
-                                File.Delete(modZipPath);
-                                Console.WriteLine("Mod-Datei wurde gelöscht.");
+                                foreach (var file in deletedFiles)
+                                {
+                                    File.Delete(file);
+                                    Log.Information("Mod-Datei gelöscht: {File}", file);
+                                }
+                                Console.WriteLine("Mod-Datei(en) wurden gelöscht.");
                             }
                             else
                             {
@@ -205,57 +216,55 @@ namespace LS25ModDownloader
                     Console.WriteLine($"Kein Release gefunden für {repoName}.");
                     return;
                 }
-                if (!Version.TryParse(release.TagName.TrimStart('v'), out Version latestVersion))
+                if (!Version.TryParse(release.TagName?.TrimStart('v'), out Version? latestVersion) || latestVersion is null)
                 {
                     Log.Warning("Ungültige Version aus GitHub für {RepoName}: {TagName}", repoName, release.TagName);
                     return;
                 }
                 Version currentVersion = versions.ContainsKey(repoName) ? versions[repoName] : new Version(0, 0, 0);
 
-                // Prüfe ob eine Mod-Datei im Mod-Ordner vorhanden ist (beliebiger Name)
-                bool modFileExists = Directory.EnumerateFiles(_config.ModFolder, "*.zip")
-                    .Any(f => Path.GetFileNameWithoutExtension(f).Equals(repoName, StringComparison.OrdinalIgnoreCase)
-                           || Path.GetFileName(f).StartsWith(repoName.Replace("_FS25", "").Replace("FS25_", ""), StringComparison.OrdinalIgnoreCase));
-                if (!modFileExists)
+                // Dateiname direkt von GitHub übernehmen (z.B. FS25_Courseplay.zip)
+                string? downloadUrl = release.Assets?.FirstOrDefault()?.BrowserDownloadUrl;
+                if (string.IsNullOrWhiteSpace(downloadUrl))
+                {
+                    Console.WriteLine("Download-URL nicht gefunden.");
+                    return;
+                }
+                string assetFileName = Path.GetFileName(new Uri(downloadUrl).LocalPath);
+                string modZipPath = Path.Combine(_config.ModFolder, assetFileName);
+
+                // Wenn die Datei nicht existiert, Version zurücksetzen
+                if (!File.Exists(modZipPath))
                 {
                     currentVersion = new Version(0, 0, 0);
                     versions[repoName] = currentVersion;
                 }
+
                 if (currentVersion < latestVersion)
                 {
                     Log.Warning("Neue Version gefunden für {RepoName}: {LatestVersion} (Aktuelle Version: {CurrentVersion})", repoName, latestVersion, currentVersion);
-                    string downloadUrl = release.Assets.FirstOrDefault()?.BrowserDownloadUrl;
-                    if (string.IsNullOrWhiteSpace(downloadUrl))
-                    {
-                        Console.WriteLine("Download-URL nicht gefunden.");
-                        return;
-                    }
 
-                    // Dateiname direkt von GitHub übernehmen (z.B. FS25_Courseplay.zip)
-                    string assetFileName = Path.GetFileName(new Uri(downloadUrl).LocalPath);
-                    string modZipPath = Path.Combine(_config.ModFolder, assetFileName);
-
-                    // Alle vorhandenen Zips dieses Mods löschen (verhindert Duplikate)
+                    // Alle vorhandenen Zips dieses Mods löschen (verhindet Duplikate)
                     foreach (var oldFile in Directory.EnumerateFiles(_config.ModFolder, "*.zip")
                         .Where(f => !f.Equals(modZipPath, StringComparison.OrdinalIgnoreCase)
-                                 && (Path.GetFileNameWithoutExtension(f).Equals(repoName, StringComparison.OrdinalIgnoreCase)
-                                  || Path.GetFileName(f).StartsWith(repoName.Replace("_FS25", "").Replace("FS25_", ""), StringComparison.OrdinalIgnoreCase))))
+                                 && Path.GetFileNameWithoutExtension(f).Equals(repoName, StringComparison.OrdinalIgnoreCase)))
                     {
                         Log.Information("Lösche alte Mod-Datei: {OldFile}", oldFile);
                         File.Delete(oldFile);
                     }
 
-                    var downloadResponse = await _client.GetAsync(downloadUrl);
+                    var downloadResponse = await _client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
                     downloadResponse.EnsureSuccessStatusCode();
-                    using (var fs = new FileStream(modZipPath, FileMode.Create))
+                    await using (var stream = await downloadResponse.Content.ReadAsStreamAsync())
+                    await using (var fs = new FileStream(modZipPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 8192, useAsync: true))
                     {
-                        await downloadResponse.Content.CopyToAsync(fs);
+                        await stream.CopyToAsync(fs);
                     }
                     string extractedVersionStr = await ExtractVersionFromZipAsync(modZipPath);
-                    if (!Version.TryParse(extractedVersionStr, out Version extractedVersion))
+                    if (!Version.TryParse(extractedVersionStr, out Version? extractedVersion) || extractedVersion is null)
                     {
                         extractedVersion = new Version(0, 0, 0);
-                    }
+                      }
                     if (extractedVersion == latestVersion)
                     {
                         Log.Information("{RepoName} erfolgreich aktualisiert auf Version {LatestVersion}", repoName, latestVersion);
@@ -283,24 +292,21 @@ namespace LS25ModDownloader
         /// <summary>
         /// Liest die Versionsnummer aus dem Zip-Archiv aus – zuerst aus "modesc.xml", falls vorhanden, sonst aus "modDesc.xml".
         /// </summary>
-        private async Task<string> ExtractVersionFromZipAsync(string zipPath)
+        private Task<string> ExtractVersionFromZipAsync(string zipPath)
         {
-            using (var zip = ZipFile.OpenRead(zipPath))
+            return Task.Run(() =>
             {
-                // Suche nach einer Datei, deren Name (unabhängig vom Pfad) "modesc.xml" oder "modDesc.xml" entspricht.
+                using var zip = ZipFile.OpenRead(zipPath);
                 var entry = zip.Entries.FirstOrDefault(e =>
-                                e.FullName.EndsWith("modDesc.xml", StringComparison.OrdinalIgnoreCase));
+                    e.FullName.EndsWith("modDesc.xml", StringComparison.OrdinalIgnoreCase));
                 if (entry != null)
                 {
-                    using (var stream = entry.Open())
-                    {
-                        var doc = XDocument.Load(stream);
-                        // Lies den Inhalt des <version>-Elements aus
-                        return doc.Root?.Element("version")?.Value ?? "unknown";
-                    }
+                    using var stream = entry.Open();
+                    var doc = XDocument.Load(stream);
+                    return doc.Root?.Element("version")?.Value ?? "unknown";
                 }
                 return "unknown";
-            }
+            });
         }
 
 

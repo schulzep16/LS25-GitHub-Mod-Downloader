@@ -24,10 +24,10 @@ namespace LS25ModDownloader
                     var lines = await File.ReadAllLinesAsync(_config.CurrentVersionFile);
                     foreach (var line in lines)
                     {
-                        var parts = line.Split(':');
-                        if (parts.Length == 2 && Version.TryParse(parts[1], out Version ver))
+                        int separatorIndex = line.IndexOf(':');
+                        if (separatorIndex > 0 && Version.TryParse(line[(separatorIndex + 1)..], out Version? ver) && ver is not null)
                         {
-                            versions[parts[0]] = ver;
+                            versions[line[..separatorIndex]] = ver;
                         }
                         else
                         {

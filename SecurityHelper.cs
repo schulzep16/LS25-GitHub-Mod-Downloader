@@ -1,13 +1,16 @@
-﻿using System;
+﻿using Serilog;
 
 namespace LS25ModDownloader
 {
     public static class SecurityHelper
     {
+        /// <summary>
+        /// Platzhalter für eine spätere RSA/SHA256-Signaturprüfung.
+        /// Solange nicht implementiert, wird die Prüfung übersprungen.
+        /// </summary>
         public static bool VerifyFileSignature(string filePath, string signatureFilePath)
         {
-            Console.WriteLine("Signaturprüfung wird durchgeführt...");
-            // TODO: Implementiere hier die echte RSA-Signaturprüfung (z. B. mit RSA und SHA256)
+            Log.Warning("Signaturprüfung nicht implementiert – Datei {FilePath} wird ohne Prüfung akzeptiert.", filePath);
             return true;
         }
     }
